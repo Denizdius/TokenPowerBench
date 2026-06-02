@@ -1,20 +1,15 @@
 """
 Dataset loader supporting Alpaca, Dolly 15K, LongBench, and HumanEval.
 
-Online: downloads from Hugging Face Hub (requires network on first run).
+Online: downloads from Hugging Face Hub (requires ``datasets`` + network).
 
-Offline: pass a local path via ``dataset_path`` (``--dataset-path`` on the CLI):
+Offline: ``--dataset-path`` loads local data without Hub access.
 
-  1. Hugging Face ``save_to_disk`` directory (recommended)::
+  1. **No extra packages** — ``.txt``, ``.json``, or ``.jsonl`` (stdlib only).
 
-        from datasets import load_dataset
-        load_dataset("tatsu-lab/alpaca").save_to_disk("/data/alpaca")
+  2. **``datasets``** — ``save_to_disk`` directories and Hub cache layout.
 
-     Then: ``--dataset alpaca --dataset-path /data/alpaca``
-
-  2. JSON / JSONL file with dataset-specific columns (see extractors below).
-
-  3. Plain ``.txt`` file — one prompt per line (any ``--dataset`` name).
+  3. **``pyarrow``** (optional) — ``.arrow`` / ``.parquet`` under ``save_to_disk``.
 """
 
 from __future__ import annotations
@@ -22,7 +17,7 @@ from __future__ import annotations
 import json
 import random
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Union
+from typing import Any, Dict, Iterable, List, Optional
 
 try:
     from datasets import load_dataset as hf_load_dataset
@@ -31,19 +26,24 @@ try:
 except ImportError:
     _HF_AVAILABLE = False
 
+try:
+    import pyarrow as pa
+    import pyarrow.ipc as pa_ipc
+    import pyarrow.parquet as pa_parquet
+    _PYARROW_AVAILABLE = True
+except ImportError:
+    pa_parquet = None  # type: ignore
+    _PYARROW_AVAILABLE = False
+
 _SUPPORTED = ("alpaca", "dolly", "longbench", "humaneval")
+_METADATA_JSON = frozenset(
+    {"dataset_dict.json", "dataset_info.json", "state.json"}
+)
 
 
 class DatasetLoader:
     """
     Load and pre-process prompts from standard LLM evaluation datasets.
-
-    Parameters
-    ----------
-    cache_dir : str, optional
-        HuggingFace dataset cache directory (online mode only).
-    seed : int
-        Random seed for reproducible sampling.
     """
 
     def __init__(self, cache_dir: Optional[str] = None, seed: int = 42) -> None:
@@ -52,9 +52,9 @@ class DatasetLoader:
         random.seed(seed)
         if not _HF_AVAILABLE:
             print(
-                "Warning: HuggingFace `datasets` library not installed. "
-                "Online Hub download and save_to_disk loading are unavailable. "
-                "Use --dataset-path with a .txt or .jsonl file, or: pip install datasets"
+                "[DatasetLoader] HuggingFace `datasets` not installed — "
+                "Hub download disabled. Local paths still work via "
+                ".json/.jsonl/.txt, or Arrow/Parquet if pyarrow is installed."
             )
 
     def load(
@@ -65,27 +65,6 @@ class DatasetLoader:
         max_words: int = 100,
         dataset_path: Optional[str] = None,
     ) -> List[str]:
-        """
-        Load, filter, and sample prompts.
-
-        Parameters
-        ----------
-        dataset : str
-            One of: "alpaca", "dolly", "longbench", "humaneval".
-            Selects how rows are turned into prompt strings.
-        num_samples : int
-            Maximum number of prompts to return.
-        min_words, max_words : int
-            Filter by prompt length (word count).
-        dataset_path : str, optional
-            Local file or directory. When set, no Hub download is attempted.
-            See module docstring for supported layouts.
-
-        Returns
-        -------
-        List[str]
-            Sampled prompts ready for inference.
-        """
         name = dataset.lower().strip()
         loaders = {
             "alpaca": self._alpaca,
@@ -118,19 +97,197 @@ class DatasetLoader:
         }
 
     # ------------------------------------------------------------------
-    # Local I/O
+    # Local I/O (no HuggingFace `datasets` required)
     # ------------------------------------------------------------------
 
-    def _load_hf_local(self, path: Path) -> Any:
-        """Load a Hugging Face dataset from disk (save_to_disk) or JSON/JSONL."""
-        if not _HF_AVAILABLE:
-            raise RuntimeError(
-                "The `datasets` package is required to load this path. "
-                "Install with: pip install datasets"
+    @staticmethod
+    def _companion_jsonl_paths(path: Path) -> List[Path]:
+        """Common JSONL locations when ``path`` is a save_to_disk directory."""
+        if path.is_file():
+            return []
+        names = [f"{path.name}.jsonl", "alpaca.jsonl", "data.jsonl"]
+        candidates = [path.parent / n for n in names]
+        candidates.append(path / f"{path.name}.jsonl")
+        out: List[Path] = []
+        seen: set[Path] = set()
+        for c in candidates:
+            key = c.resolve()
+            if key not in seen and c.is_file():
+                seen.add(key)
+                out.append(c)
+        return out
+
+    def _load_local_records(self, path: Path) -> List[Dict[str, Any]]:
+        """
+        Load rows from a local path using stdlib JSON and optional pyarrow.
+
+        Tried in order: direct file → companion .jsonl → JSON in tree → Arrow.
+        """
+        if path.is_file():
+            records = self._read_json_file(path)
+            if records:
+                print(f"[DatasetLoader] Loaded {len(records)} rows (stdlib) from {path}")
+                return records
+
+        for jsonl_path in self._companion_jsonl_paths(path):
+            records = self._read_json_file(jsonl_path)
+            if records:
+                print(
+                    f"[DatasetLoader] Loaded {len(records)} rows (stdlib) from "
+                    f"companion file {jsonl_path}"
+                )
+                return records
+
+        records = self._collect_json_records_from_dir(path)
+        if records:
+            print(
+                f"[DatasetLoader] Loaded {len(records)} rows (stdlib JSON) under {path}"
             )
+            return records
+
+        records = self._load_arrow_records(path)
+        if records:
+            print(
+                f"[DatasetLoader] Loaded {len(records)} rows (pyarrow) under {path}"
+            )
+            return records
+
+        if _HF_AVAILABLE:
+            return list(self._iter_items(self._load_hf_local(path)))
+
+        arrow_files = list(path.rglob("*.arrow")) if path.is_dir() else []
+        hint = (
+            "Your folder looks like HuggingFace save_to_disk (train/*.arrow). "
+            "This Apptainer image has no `pyarrow` or `datasets` in pip, so convert "
+            "once on the login node:\n"
+            "  python3 scripts/arrow_shard_to_jsonl.py "
+            f"--input {path} --output {path.parent / (path.name + '.jsonl')}\n"
+            "Then rerun with:\n"
+            f"  --dataset-path {path.parent / (path.name + '.jsonl')}"
+        )
+        if arrow_files and not _PYARROW_AVAILABLE:
+            raise FileNotFoundError(hint)
+        raise FileNotFoundError(
+            f"Could not read data from {path}. Provide a .jsonl file, or see "
+            "scripts/arrow_shard_to_jsonl.py to convert save_to_disk Arrow shards."
+        )
+
+    @staticmethod
+    def _read_json_file(path: Path) -> List[Dict[str, Any]]:
+        suffix = path.suffix.lower()
+        if suffix not in (".json", ".jsonl"):
+            return []
+
+        records: List[Dict[str, Any]] = []
+        with open(path, encoding="utf-8") as f:
+            if suffix == ".jsonl":
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    row = json.loads(line)
+                    if isinstance(row, dict):
+                        records.append(row)
+                return records
+
+            data = json.load(f)
+        if isinstance(data, list):
+            records = [r for r in data if isinstance(r, dict)]
+        elif isinstance(data, dict):
+            for key in ("data", "train", "examples", "instances"):
+                chunk = data.get(key)
+                if isinstance(chunk, list):
+                    records = [r for r in chunk if isinstance(r, dict)]
+                    if records:
+                        break
+        return records
+
+    def _collect_json_records_from_dir(self, root: Path) -> List[Dict[str, Any]]:
+        candidates: List[Path] = []
+        seen: set[Path] = set()
+        for pattern in ("*.jsonl", "*.json", "**/*.jsonl", "**/*.json"):
+            for p in sorted(root.glob(pattern)):
+                if p.name in _METADATA_JSON:
+                    continue
+                key = p.resolve()
+                if key in seen:
+                    continue
+                seen.add(key)
+                candidates.append(p)
+
+        # Prefer obvious Alpaca / split names
+        def sort_key(p: Path) -> tuple:
+            name = p.name.lower()
+            if "alpaca" in name:
+                return (0, name)
+            if p.parent.name in ("train", "test", "validation"):
+                return (1, name)
+            return (2, name)
+
+        candidates.sort(key=sort_key)
+
+        all_records: List[Dict[str, Any]] = []
+        for path in candidates:
+            rows = self._read_json_file(path)
+            if rows:
+                all_records.extend(rows)
+                # One good file is enough unless we need more (e.g. LongBench subdirs)
+                if path.suffix.lower() == ".jsonl" or "alpaca" in path.name.lower():
+                    break
+        return all_records
+
+    @staticmethod
+    def _read_arrow_shard(data_file: Path) -> List[Dict[str, Any]]:
+        """Read one Arrow shard (HF ``save_to_disk`` uses IPC *stream* format)."""
+        if data_file.suffix == ".parquet":
+            table = pa_parquet.read_table(data_file)
+            return [r for r in table.to_pylist() if isinstance(r, dict)]
+
+        with open(data_file, "rb") as f:
+            # HuggingFace datasets.save_to_disk() writes stream format
+            try:
+                reader = pa_ipc.open_stream(f)
+                table = reader.read_all()
+            except Exception:
+                f.seek(0)
+                reader = pa_ipc.open_file(f)
+                table = reader.read_all()
+        return [r for r in table.to_pylist() if isinstance(r, dict)]
+
+    def _load_arrow_records(self, root: Path) -> List[Dict[str, Any]]:
+        if not _PYARROW_AVAILABLE:
+            arrow_files = list(root.rglob("*.arrow"))
+            if arrow_files:
+                print(
+                    f"[DatasetLoader] Found {len(arrow_files)} .arrow file(s) under "
+                    f"{root} but pyarrow is not installed in this environment."
+                )
+            return []
+
+        search_dirs = [root]
+        for sub in ("train", "test", "validation"):
+            d = root / sub
+            if d.is_dir():
+                search_dirs.append(d)
+
+        records: List[Dict[str, Any]] = []
+        for directory in search_dirs:
+            for pattern in ("*.arrow", "*.parquet"):
+                for data_file in sorted(directory.glob(pattern)):
+                    try:
+                        chunk = self._read_arrow_shard(data_file)
+                        records.extend(chunk)
+                    except Exception as exc:
+                        print(f"[DatasetLoader] Skip {data_file}: {exc}")
+        return records
+
+    def _load_hf_local(self, path: Path) -> Any:
+        """Load via HuggingFace ``datasets`` (requires package)."""
+        if not _HF_AVAILABLE:
+            raise RuntimeError("pip install datasets")
 
         if path.is_file() and path.suffix.lower() in (".json", ".jsonl"):
-            print(f"[DatasetLoader] Loading JSON/JSONL: {path}")
+            print(f"[DatasetLoader] Loading JSON/JSONL (HF): {path}")
             return hf_load_dataset(
                 "json",
                 data_files=str(path),
@@ -139,31 +296,15 @@ class DatasetLoader:
             )
 
         if (path / "dataset_dict.json").exists() or (path / "state.json").exists():
-            print(f"[DatasetLoader] Loading from disk: {path}")
+            print(f"[DatasetLoader] Loading from disk (HF): {path}")
             return hf_load_from_disk(str(path))
 
-        json_files = sorted(path.glob("*.json")) + sorted(path.glob("*.jsonl"))
-        json_files += sorted(path.glob("**/*.json")) + sorted(path.glob("**/*.jsonl"))
-        # Prefer shallow files; avoid duplicates from ** glob
-        seen = set()
-        unique_json = []
-        for f in json_files:
-            if f.resolve() not in seen:
-                seen.add(f.resolve())
-                unique_json.append(f)
-        if unique_json:
-            data_file = str(unique_json[0])
-            print(f"[DatasetLoader] Loading JSON/JSONL: {data_file}")
-            return hf_load_dataset(
-                "json",
-                data_files=data_file,
-                cache_dir=self.cache_dir,
-                split="train",
-            )
+        json_files = self._collect_json_records_from_dir(path)
+        if json_files:
+            return json_files
 
         raise FileNotFoundError(
-            f"No Hugging Face dataset_dict.json or JSON/JSONL under {path}. "
-            "Export with datasets.save_to_disk() or provide a .jsonl file."
+            f"No readable dataset under {path} for HuggingFace loader."
         )
 
     def _load_txt_file(
@@ -187,7 +328,11 @@ class DatasetLoader:
     def _iter_items(
         ds: Any, *split_names: str
     ) -> Iterable[Dict[str, Any]]:
-        """Iterate rows from a DatasetDict or single Dataset."""
+        if isinstance(ds, list):
+            for item in ds:
+                if isinstance(item, dict):
+                    yield item
+            return
         if hasattr(ds, "keys"):
             for split in split_names:
                 if split in ds:
@@ -205,6 +350,49 @@ class DatasetLoader:
     # Dataset-specific loaders
     # ------------------------------------------------------------------
 
+    def _rows_to_prompts(
+        self, rows: Iterable[Dict[str, Any]], dataset: str
+    ) -> List[str]:
+        prompts: List[str] = []
+        for item in rows:
+            if dataset == "alpaca":
+                instr = str(item.get("instruction", "")).strip()
+                ctx = str(item.get("input", "")).strip()
+                if not instr:
+                    continue
+                prompts.append(f"{instr}\n\nContext: {ctx}" if ctx else instr)
+            elif dataset == "dolly":
+                instr = str(item.get("instruction", "")).strip()
+                ctx = str(item.get("context", "")).strip()
+                if not instr:
+                    continue
+                prompts.append(f"{instr}\n\nContext: {ctx}" if ctx else instr)
+            elif dataset == "longbench":
+                text = str(item.get("input", "")).strip()
+                if text:
+                    prompts.append(text)
+            elif dataset == "humaneval":
+                p = str(item.get("prompt", "")).strip()
+                if p:
+                    prompts.append(
+                        f"Complete the following Python function:\n\n{p}"
+                    )
+        return prompts
+
+    def _load_local_prompts(
+        self, local_path: str, dataset: str, label: str,
+        n: int, min_w: int, max_w: int,
+    ) -> Optional[List[str]]:
+        path = Path(local_path).expanduser().resolve()
+        try:
+            rows = self._load_local_records(path)
+            prompts = self._rows_to_prompts(rows, dataset)
+            if prompts:
+                return self._filter_sample(prompts, n, min_w, max_w, label)
+        except Exception as exc:
+            print(f"[DatasetLoader] {label} local load failed: {exc}")
+        return None
+
     def _alpaca(
         self,
         n: int,
@@ -212,25 +400,21 @@ class DatasetLoader:
         max_w: int,
         local_path: Optional[str] = None,
     ) -> List[str]:
-        try:
-            if local_path:
-                ds = self._load_hf_local(Path(local_path).expanduser().resolve())
-            elif not _HF_AVAILABLE:
-                return self._fallback()
-            else:
-                ds = hf_load_dataset("tatsu-lab/alpaca", cache_dir=self.cache_dir)
+        if local_path:
+            out = self._load_local_prompts(
+                local_path, "alpaca", "Alpaca", n, min_w, max_w
+            )
+            return out if out is not None else []
 
-            prompts = []
-            for item in self._iter_items(ds, "train"):
-                instr = item.get("instruction", "").strip()
-                ctx = item.get("input", "").strip()
-                if not instr:
-                    continue
-                prompts.append(f"{instr}\n\nContext: {ctx}" if ctx else instr)
+        try:
+            if not _HF_AVAILABLE:
+                return self._fallback()
+            ds = hf_load_dataset("tatsu-lab/alpaca", cache_dir=self.cache_dir)
+            prompts = self._rows_to_prompts(self._iter_items(ds, "train"), "alpaca")
             return self._filter_sample(prompts, n, min_w, max_w, "Alpaca")
         except Exception as exc:
             print(f"[DatasetLoader] Alpaca load failed: {exc}")
-            return [] if local_path else self._fallback()
+            return self._fallback()
 
     def _dolly(
         self,
@@ -239,27 +423,23 @@ class DatasetLoader:
         max_w: int,
         local_path: Optional[str] = None,
     ) -> List[str]:
-        try:
-            if local_path:
-                ds = self._load_hf_local(Path(local_path).expanduser().resolve())
-            elif not _HF_AVAILABLE:
-                return self._fallback()
-            else:
-                ds = hf_load_dataset(
-                    "databricks/databricks-dolly-15k", cache_dir=self.cache_dir
-                )
+        if local_path:
+            out = self._load_local_prompts(
+                local_path, "dolly", "Dolly 15K", n, min_w, max_w
+            )
+            return out if out is not None else []
 
-            prompts = []
-            for item in self._iter_items(ds, "train"):
-                instr = item.get("instruction", "").strip()
-                ctx = item.get("context", "").strip()
-                if not instr:
-                    continue
-                prompts.append(f"{instr}\n\nContext: {ctx}" if ctx else instr)
+        try:
+            if not _HF_AVAILABLE:
+                return self._fallback()
+            ds = hf_load_dataset(
+                "databricks/databricks-dolly-15k", cache_dir=self.cache_dir
+            )
+            prompts = self._rows_to_prompts(self._iter_items(ds, "train"), "dolly")
             return self._filter_sample(prompts, n, min_w, max_w, "Dolly 15K")
         except Exception as exc:
             print(f"[DatasetLoader] Dolly load failed: {exc}")
-            return [] if local_path else self._fallback()
+            return self._fallback()
 
     def _longbench(
         self,
@@ -268,55 +448,51 @@ class DatasetLoader:
         max_w: int,
         local_path: Optional[str] = None,
     ) -> List[str]:
-        try:
+        if local_path:
+            root = Path(local_path).expanduser().resolve()
             prompts: List[str] = []
-            if local_path:
-                root = Path(local_path).expanduser().resolve()
-                subtasks = [
-                    "narrativeqa", "qasper", "multifieldqa_en", "hotpotqa", "2wikimqa"
-                ]
-                loaded_any = False
-                for sub in subtasks:
-                    sub_path = root / sub
-                    if sub_path.is_dir():
-                        ds = self._load_hf_local(sub_path)
-                        loaded_any = True
-                    else:
-                        continue
-                    for item in self._iter_items(ds, "test", "train"):
-                        text = item.get("input", "").strip()
-                        if text:
-                            prompts.append(text)
-                if not loaded_any:
-                    ds = self._load_hf_local(root)
-                    for item in self._iter_items(ds, "test", "train"):
-                        text = item.get("input", "").strip()
-                        if text:
-                            prompts.append(text)
-            elif not _HF_AVAILABLE:
-                return self._longbench_fallback()
-            else:
-                subtasks = [
-                    "narrativeqa", "qasper", "multifieldqa_en", "hotpotqa", "2wikimqa"
-                ]
-                for sub in subtasks:
+            subtasks = [
+                "narrativeqa", "qasper", "multifieldqa_en", "hotpotqa", "2wikimqa"
+            ]
+            for sub in subtasks:
+                sub_path = root / sub
+                if sub_path.is_dir():
                     try:
-                        ds = hf_load_dataset(
-                            "THUDM/LongBench", sub, cache_dir=self.cache_dir
+                        rows = self._load_local_records(sub_path)
+                        prompts.extend(
+                            self._rows_to_prompts(rows, "longbench")
                         )
-                        for item in self._iter_items(ds, "test"):
-                            text = item.get("input", "").strip()
-                            if text:
-                                prompts.append(text)
                     except Exception as exc:
-                        print(f"[DatasetLoader] LongBench/{sub} failed: {exc}")
-
+                        print(f"[DatasetLoader] LongBench/{sub}: {exc}")
             if not prompts:
-                return [] if local_path else self._longbench_fallback()
+                out = self._load_local_prompts(
+                    local_path, "longbench", "LongBench", n, min_w, max_w
+                )
+                return out if out is not None else []
+            return self._filter_sample(prompts, n, min_w, max_w, "LongBench")
+
+        try:
+            if not _HF_AVAILABLE:
+                return self._longbench_fallback()
+            prompts = []
+            for sub in [
+                "narrativeqa", "qasper", "multifieldqa_en", "hotpotqa", "2wikimqa"
+            ]:
+                try:
+                    ds = hf_load_dataset(
+                        "THUDM/LongBench", sub, cache_dir=self.cache_dir
+                    )
+                    prompts.extend(
+                        self._rows_to_prompts(self._iter_items(ds, "test"), "longbench")
+                    )
+                except Exception as exc:
+                    print(f"[DatasetLoader] LongBench/{sub} failed: {exc}")
+            if not prompts:
+                return self._longbench_fallback()
             return self._filter_sample(prompts, n, min_w, max_w, "LongBench")
         except Exception as exc:
             print(f"[DatasetLoader] LongBench load failed: {exc}")
-            return [] if local_path else self._longbench_fallback()
+            return self._longbench_fallback()
 
     def _humaneval(
         self,
@@ -325,25 +501,25 @@ class DatasetLoader:
         max_w: int,
         local_path: Optional[str] = None,
     ) -> List[str]:
-        try:
-            if local_path:
-                ds = self._load_hf_local(Path(local_path).expanduser().resolve())
-            elif not _HF_AVAILABLE:
-                return self._humaneval_fallback()
-            else:
-                ds = hf_load_dataset(
-                    "openai/openai_humaneval", cache_dir=self.cache_dir
-                )
+        if local_path:
+            out = self._load_local_prompts(
+                local_path, "humaneval", "HumanEval", n, min_w, max_w
+            )
+            return out if out is not None else []
 
-            prompts = [
-                f"Complete the following Python function:\n\n{item['prompt']}"
-                for item in self._iter_items(ds, "test", "train")
-                if item.get("prompt", "").strip()
-            ]
+        try:
+            if not _HF_AVAILABLE:
+                return self._humaneval_fallback()
+            ds = hf_load_dataset(
+                "openai/openai_humaneval", cache_dir=self.cache_dir
+            )
+            prompts = self._rows_to_prompts(
+                self._iter_items(ds, "test", "train"), "humaneval"
+            )
             return self._filter_sample(prompts, n, min_w, max_w, "HumanEval")
         except Exception as exc:
             print(f"[DatasetLoader] HumanEval load failed: {exc}")
-            return [] if local_path else self._humaneval_fallback()
+            return self._humaneval_fallback()
 
     # ------------------------------------------------------------------
     # Helpers
