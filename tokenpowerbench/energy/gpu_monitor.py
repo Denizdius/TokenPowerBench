@@ -59,10 +59,6 @@ class GPUEnergyMonitor(EnergyMonitor):
         self._active = False
         self._thread: threading.Thread | None = None
 
-    # ------------------------------------------------------------------
-    # Public interface
-    # ------------------------------------------------------------------
-
     def start(self) -> None:
         self._readings = []
         self._active = True
@@ -96,8 +92,8 @@ class GPUEnergyMonitor(EnergyMonitor):
                 num_responses=num_responses,
             )
 
-        arr = np.array(readings)           # shape: (n_samples, n_gpus)
-        per_gpu_avg = np.mean(arr, axis=0) # shape: (n_gpus,)
+        arr = np.array(readings)
+        per_gpu_avg = np.mean(arr, axis=0)
         total_gpu_w = float(np.sum(per_gpu_avg))
 
         return EnergyMetrics(
@@ -109,17 +105,13 @@ class GPUEnergyMonitor(EnergyMonitor):
             per_gpu_power_w={i: float(v) for i, v in enumerate(per_gpu_avg)},
         )
 
-    # ------------------------------------------------------------------
-    # Internal
-    # ------------------------------------------------------------------
-
     def _sample_loop(self) -> None:
         while self._active:
             sample = []
             for handle in self._handles:
                 try:
                     mw = pynvml.nvmlDeviceGetPowerUsage(handle)
-                    sample.append(mw / 1000.0)  # mW → W
+                    sample.append(mw / 1000.0)
                 except Exception:
                     sample.append(0.0)
             with self._lock:

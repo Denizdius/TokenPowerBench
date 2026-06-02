@@ -10,15 +10,19 @@ Usage
         --batch-sizes 128,256 \
         --num-samples 5000 \
         --output-tokens 500 \
+        --gpu-memory-utilization 0.85 \
+        --tensor-parallel-size 1 \
+        --pipeline-parallel-size 1 \
+        --data-parallel-size 1 \
+        --dataset alpaca \
+        --dataset-path /data/alpaca \
         --monitor auto        # "auto" | "gpu_only" | "full_node"
 
 Monitor modes
 -------------
   auto       Automatically use full_node if RAPL is accessible, else gpu_only.
   gpu_only   GPU power via NVML only. No root required.
-             Suitable for any data-center / cloud user.
   full_node  GPU + CPU (Intel RAPL) + total node (IPMI).
-             Requires root or appropriate sysfs / BMC permissions.
 """
 
 import argparse
@@ -26,6 +30,8 @@ import json
 import os
 import time
 from pathlib import Path
+
+import torch
 
 from tokenpowerbench.data import DatasetLoader
 from tokenpowerbench.energy import create_monitor
@@ -40,27 +46,71 @@ def parse_args():
     p.add_argument("--engine", default="vllm", choices=["vllm"],
                    help="Inference engine (default: vllm)")
 
-    # Dataset
     p.add_argument("--dataset", default="alpaca",
                    choices=["alpaca", "dolly", "longbench", "humaneval"],
-                   help="Dataset to use for prompts")
+                   help="Dataset name: selects how rows are parsed into prompts")
+    p.add_argument(
+        "--dataset-path",
+        default=None,
+        help=(
+            "Local dataset path (offline). Directory from datasets.save_to_disk(), "
+            "a .json/.jsonl file, or a .txt file (one prompt per line). "
+            "When set, Hugging Face Hub is not used."
+        ),
+    )
     p.add_argument("--num-samples", type=int, default=5000,
                    help="Number of inference requests")
     p.add_argument("--min-words", type=int, default=2)
     p.add_argument("--max-words", type=int, default=300)
 
-    # Inference
     p.add_argument("--batch-sizes", default="256",
                    help="Comma-separated list of batch sizes, e.g. '128,256,512'")
     p.add_argument("--output-tokens", type=int, default=500,
                    help="Max tokens to generate per prompt")
 
-    # Energy monitoring
+    p.add_argument(
+        "--gpu-memory-utilization",
+        type=float,
+        default=0.85,
+        help="vLLM fraction of GPU memory for KV/weights (default: 0.85).",
+    )
+    p.add_argument(
+        "--max-model-len",
+        type=int,
+        default=None,
+        help="vLLM max_model_len; default: from model config.",
+    )
+    p.add_argument(
+        "--tensor-parallel-size",
+        type=int,
+        default=None,
+        help="vLLM tensor_parallel_size (default: all visible GPUs).",
+    )
+    p.add_argument(
+        "--pipeline-parallel-size",
+        type=int,
+        default=1,
+        help="vLLM pipeline_parallel_size (default: 1).",
+    )
+    p.add_argument(
+        "--data-parallel-size",
+        type=int,
+        default=1,
+        help="vLLM data_parallel_size (default: 1).",
+    )
+    p.add_argument(
+        "--enforce-eager",
+        action="store_true",
+        help=(
+            "vLLM enforce_eager=True: disable CUDA graphs / torch.compile capture. "
+            "Slower but more compatible; default is False (vLLM optimized path)."
+        ),
+    )
+
     p.add_argument("--monitor", default="auto",
                    choices=["auto", "gpu_only", "full_node"],
                    help="Energy monitor mode (default: auto)")
 
-    # Output
     p.add_argument("--output-dir", default="./results",
                    help="Directory for result JSON files")
 
@@ -70,33 +120,59 @@ def parse_args():
 def run():
     args = parse_args()
     batch_sizes = [int(b.strip()) for b in args.batch_sizes.split(",")]
+    if not 0.0 < args.gpu_memory_utilization <= 1.0:
+        print("Error: --gpu-memory-utilization must be in (0, 1].")
+        return
+    if args.tensor_parallel_size is not None and args.tensor_parallel_size < 1:
+        print("Error: --tensor-parallel-size must be >= 1.")
+        return
+    if args.pipeline_parallel_size < 1 or args.data_parallel_size < 1:
+        print("Error: --pipeline-parallel-size and --data-parallel-size must be >= 1.")
+        return
+
+    n_gpus = max(torch.cuda.device_count(), 1) if torch.cuda.is_available() else 1
+    tp = args.tensor_parallel_size if args.tensor_parallel_size is not None else n_gpus
+    pp = args.pipeline_parallel_size
+    dp = args.data_parallel_size
+    if tp * pp * dp > n_gpus:
+        print(
+            f"Error: TP×PP×DP = {tp}×{pp}×{dp} = {tp * pp * dp} "
+            f"exceeds visible GPU count ({n_gpus})."
+        )
+        return
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Load dataset
     loader = DatasetLoader()
     prompts = loader.load(
         args.dataset,
         num_samples=args.num_samples,
         min_words=args.min_words,
         max_words=args.max_words,
+        dataset_path=args.dataset_path,
     )
     if not prompts:
         print("No prompts loaded. Exiting.")
         return
 
-    # Setup engine
     engine = VLLMEngine()
     if not engine.available:
         print("vLLM is not installed. Run: pip install vllm")
         return
 
-    model = engine.setup_model(args.model)
+    model = engine.setup_model(
+        args.model,
+        gpu_memory_utilization=args.gpu_memory_utilization,
+        max_model_len=args.max_model_len,
+        tensor_parallel_size=tp,
+        pipeline_parallel_size=pp,
+        data_parallel_size=dp,
+        enforce_eager=args.enforce_eager,
+    )
     if model is None:
         print(f"Failed to load model from {args.model}")
         return
 
-    # Warmup
     print("Running warmup pass…")
     engine.run_inference([prompts[0]], batch_size=1, max_tokens=20)
 
@@ -114,7 +190,6 @@ def run():
             prompts, args.num_samples, batch_size, args.output_tokens
         )
 
-        # Extra idle time so monitoring captures the tail
         time.sleep(2.0)
         monitor.stop()
 
@@ -124,41 +199,43 @@ def run():
 
         print(metrics.summary())
 
-        result = {
+        all_results[f"batch_{batch_size}"] = {
             "model": args.model,
             "engine": args.engine,
             "dataset": args.dataset,
+            "dataset_path": args.dataset_path,
             "batch_size": batch_size,
             "num_samples": args.num_samples,
             "output_tokens": args.output_tokens,
+            "gpu_memory_utilization": args.gpu_memory_utilization,
+            "max_model_len_cli": args.max_model_len,
+            "tensor_parallel_size": tp,
+            "pipeline_parallel_size": pp,
+            "data_parallel_size": dp,
+            "enforce_eager": args.enforce_eager,
             "monitor_mode": args.monitor,
-            # Timing
             "duration_s": duration,
             "total_output_tokens": total_tokens,
             "num_responses": len(outputs),
-            # GPU (always present)
             "gpu_avg_power_w": metrics.gpu_avg_power_w,
             "gpu_energy_j": metrics.gpu_energy_j,
             "gpu_mj_per_token": metrics.gpu_mj_per_token,
             "per_gpu_power_w": metrics.per_gpu_power_w,
-            # CPU / DRAM (full_node only)
             "cpu_avg_power_w": metrics.cpu_avg_power_w,
             "cpu_energy_j": metrics.cpu_energy_j,
             "dram_avg_power_w": metrics.dram_avg_power_w,
             "dram_energy_j": metrics.dram_energy_j,
-            # System total via IPMI (full_node only)
             "system_avg_power_w": metrics.system_avg_power_w,
             "system_energy_j": metrics.system_energy_j,
-            # Combined
             "total_energy_j": metrics.total_energy_j,
             "total_mj_per_token": metrics.total_mj_per_token,
         }
-        all_results[f"batch_{batch_size}"] = result
 
-    # Save results
     model_slug = os.path.basename(args.model.rstrip("/"))
     timestamp = time.strftime("%Y%m%d_%H%M%S")
-    out_file = output_dir / f"{model_slug}_{args.engine}_b{'_'.join(str(b) for b in batch_sizes)}_{timestamp}.json"
+    out_file = output_dir / (
+        f"{model_slug}_{args.engine}_b{'_'.join(str(b) for b in batch_sizes)}_{timestamp}.json"
+    )
     with open(out_file, "w") as f:
         json.dump(all_results, f, indent=2)
     print(f"\nResults saved to: {out_file}")

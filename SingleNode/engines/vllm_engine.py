@@ -22,7 +22,7 @@ class VLLMEngine:
         """Initialize the vLLM engine."""
         self.available = VLLM_AVAILABLE
     
-    def setup_model(self, model_path, gpu_memory_utilization=0.9, max_model_len=None):
+    def setup_model(self, model_path, gpu_memory_utilization=0.85, max_model_len=None):
         """Initialize a vLLM model."""
         if not self.available:
             print("vLLM is not available. Please install it first.")

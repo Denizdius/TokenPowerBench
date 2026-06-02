@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Local model weights (large)
+Qwen3-8B-quantized.w4a16/
+
+# Offline dataset exports (save_to_disk)
+alpaca/
+
+# Benchmark outputs (keep results/ directory, ignore files inside)
+results/*
+!results/.gitkeep
+
+# vLLM run logs
+vllm_run_single_node.txt
+vllm_run_single_node_ts.txt

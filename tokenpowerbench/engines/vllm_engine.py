@@ -36,33 +36,38 @@ class VLLMEngine(InferenceEngine):
     def setup_model(
         self,
         model_path: str,
-        gpu_memory_utilization: float = 0.9,
+        gpu_memory_utilization: float = 0.85,
         max_model_len: Optional[int] = None,
+        tensor_parallel_size: Optional[int] = None,
+        pipeline_parallel_size: int = 1,
+        data_parallel_size: int = 1,
+        enforce_eager: bool = False,
     ) -> Optional[LLM]:
-        """Load a model from local path.
-
-        Parameters
-        ----------
-        model_path : str
-            Path to the model directory (HuggingFace snapshot format).
-        gpu_memory_utilization : float
-            Fraction of GPU memory vLLM may use (default 0.9).
-        max_model_len : int, optional
-            Override the context length. Auto-detected from config.json if None.
-        """
         if not self.available:
             print("[VLLMEngine] vLLM is not installed.")
             return None
 
         torch.cuda.empty_cache()
-        n_gpus = torch.cuda.device_count()
-        tp = max(n_gpus, 1)
+        n_gpus = max(torch.cuda.device_count(), 1)
+        tp = tensor_parallel_size if tensor_parallel_size is not None else n_gpus
+        pp = pipeline_parallel_size
+        dp = data_parallel_size
 
         if max_model_len is None:
             max_model_len = _read_max_position_embeddings(model_path)
 
         os.environ["VLLM_ALLOW_LONG_MAX_MODEL_LEN"] = "1"
-        print(f"[VLLMEngine] Loading {model_path}  TP={tp}  max_len={max_model_len}")
+        print(
+            f"[VLLMEngine] Loading {model_path}  "
+            f"TP={tp} PP={pp} DP={dp}  max_len={max_model_len}  "
+            f"enforce_eager={enforce_eager}"
+        )
+
+        llm_kwargs: dict = {}
+        if pp != 1:
+            llm_kwargs["pipeline_parallel_size"] = pp
+        if dp != 1:
+            llm_kwargs["data_parallel_size"] = dp
 
         try:
             self._llm = LLM(
@@ -71,6 +76,8 @@ class VLLMEngine(InferenceEngine):
                 gpu_memory_utilization=gpu_memory_utilization,
                 max_model_len=max_model_len,
                 trust_remote_code=True,
+                enforce_eager=enforce_eager,
+                **llm_kwargs,
             )
             print("[VLLMEngine] Model loaded.")
             return self._llm
@@ -105,8 +112,7 @@ class VLLMEngine(InferenceEngine):
         if self._llm is None:
             return [], 0.0, 0.0
 
-        # Repeat prompts to reach num_samples total requests
-        full = []
+        full: List[str] = []
         while len(full) < num_samples:
             full.extend(prompts)
         full = full[:num_samples]
@@ -123,14 +129,9 @@ class VLLMEngine(InferenceEngine):
         total = 0
         for out in outputs:
             if hasattr(out, "outputs") and out.outputs:
-                # Rough approximation: words × 1.3
                 total += int(len(out.outputs[0].text.split()) * 1.3)
         return total
 
-
-# ---------------------------------------------------------------------------
-# Helper
-# ---------------------------------------------------------------------------
 
 def _read_max_position_embeddings(model_path: str, default: int = 2048) -> int:
     try:

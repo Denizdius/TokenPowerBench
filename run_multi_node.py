@@ -53,6 +53,11 @@ def parse_args():
     # Dataset
     p.add_argument("--datasets", default="alpaca",
                    help="Comma-separated dataset names (alpaca, dolly, longbench, humaneval)")
+    p.add_argument(
+        "--dataset-path",
+        default=None,
+        help="Local dataset path for offline use (see run_single_node.py --dataset-path)",
+    )
     p.add_argument("--num-samples", type=int, default=1000)
     p.add_argument("--min-words", type=int, default=5)
     p.add_argument("--max-words", type=int, default=100)
@@ -130,6 +135,7 @@ def run():
                 num_samples=args.num_samples,
                 min_words=args.min_words,
                 max_words=args.max_words,
+                dataset_path=args.dataset_path,
             )
             if not prompts:
                 print(f"No prompts for {dataset_name} — skipping.")

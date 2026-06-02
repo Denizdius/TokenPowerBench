@@ -66,6 +66,7 @@ class FullNodeEnergyMonitor(GPUEnergyMonitor):
     # ------------------------------------------------------------------
 
     def start(self) -> None:
+        self._readings = []
         self._cpu_readings = []
         self._system_readings = []
         self._active = True
