@@ -9,7 +9,7 @@ __pycache__/
 Qwen3-8B-quantized.w4a16/
 
 # Offline dataset exports (save_to_disk)
-alpaca/
+
 
 # Benchmark outputs (keep results/ directory, ignore files inside)
 results/*
