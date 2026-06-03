@@ -4,7 +4,7 @@ Abstract base classes for energy monitoring.
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Dict
+from typing import Dict, List
 
 
 @dataclass
@@ -30,6 +30,7 @@ class EnergyMetrics:
     gpu_avg_power_w: float = 0.0
     gpu_energy_j: float = 0.0
     per_gpu_power_w: Dict[int, float] = field(default_factory=dict)
+    gpus_included_for_energy: List[int] = field(default_factory=list)
 
     # CPU (Intel RAPL) — root / sudo only
     cpu_avg_power_w: float = 0.0
@@ -81,13 +82,20 @@ class EnergyMetrics:
             f"  Responses:         {self.num_responses}",
             "",
             "  -- GPU (NVML) --",
+        ]
+        if self.gpus_included_for_energy:
+            idxs = ", ".join(str(i) for i in self.gpus_included_for_energy)
+            lines.append(f"  GPUs in total:     [{idxs}]")
+        lines += [
             f"  Avg power:         {self.gpu_avg_power_w:.1f} W",
             f"  Energy:            {self.gpu_energy_j:.1f} J",
             f"  Energy/token:      {self.gpu_mj_per_token:.3f} mJ/token",
         ]
         if self.per_gpu_power_w:
+            included = set(self.gpus_included_for_energy)
             for idx, w in sorted(self.per_gpu_power_w.items()):
-                lines.append(f"    GPU {idx}:           {w:.1f} W")
+                mark = "" if not included or idx in included else " (idle)"
+                lines.append(f"    GPU {idx}:           {w:.1f} W{mark}")
 
         if self.cpu_avg_power_w > 0 or self.dram_avg_power_w > 0:
             lines += [

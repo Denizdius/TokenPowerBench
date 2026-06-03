@@ -25,7 +25,13 @@ __all__ = [
 ]
 
 
-def create_monitor(mode: str = "auto") -> EnergyMonitor:
+def create_monitor(
+    mode: str = "auto",
+    *,
+    tensor_parallel_size: int = 1,
+    pipeline_parallel_size: int = 1,
+    data_parallel_size: int = 1,
+) -> EnergyMonitor:
     """
     Factory for energy monitors.
 
@@ -35,15 +41,23 @@ def create_monitor(mode: str = "auto") -> EnergyMonitor:
         "auto"       FullNodeEnergyMonitor if RAPL is readable, else GPUEnergyMonitor.
         "gpu_only"   GPU power via NVML only.
         "full_node"  GPU + CPU (RAPL) + node total (IPMI).
+    tensor_parallel_size, pipeline_parallel_size, data_parallel_size : int
+        vLLM parallelism degrees. GPU energy totals include only the first
+        ``TP × PP × DP`` devices (typically GPU 0 .. N-1).
     """
+    gpu_kw = dict(
+        tensor_parallel_size=tensor_parallel_size,
+        pipeline_parallel_size=pipeline_parallel_size,
+        data_parallel_size=data_parallel_size,
+    )
     if mode == "gpu_only":
-        return GPUEnergyMonitor()
+        return GPUEnergyMonitor(**gpu_kw)
     if mode == "full_node":
-        return FullNodeEnergyMonitor()
+        return FullNodeEnergyMonitor(**gpu_kw)
     if mode == "auto":
         if _rapl_accessible():
-            return FullNodeEnergyMonitor()
-        return GPUEnergyMonitor()
+            return FullNodeEnergyMonitor(**gpu_kw)
+        return GPUEnergyMonitor(**gpu_kw)
     raise ValueError(f"Unknown monitor mode: {mode!r}. Choose 'auto', 'gpu_only', or 'full_node'.")
 
 

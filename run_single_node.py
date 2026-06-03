@@ -183,7 +183,12 @@ def run():
         print(f"Batch size: {batch_size}  |  monitor: {args.monitor}")
         print(f"{'='*60}")
 
-        monitor = create_monitor(args.monitor)
+        monitor = create_monitor(
+            args.monitor,
+            tensor_parallel_size=tp,
+            pipeline_parallel_size=pp,
+            data_parallel_size=dp,
+        )
         monitor.start()
 
         outputs, t0, t1 = engine.run_benchmark(
@@ -221,6 +226,7 @@ def run():
             "gpu_energy_j": metrics.gpu_energy_j,
             "gpu_mj_per_token": metrics.gpu_mj_per_token,
             "per_gpu_power_w": metrics.per_gpu_power_w,
+            "gpus_included_for_energy": metrics.gpus_included_for_energy,
             "cpu_avg_power_w": metrics.cpu_avg_power_w,
             "cpu_energy_j": metrics.cpu_energy_j,
             "dram_avg_power_w": metrics.dram_avg_power_w,

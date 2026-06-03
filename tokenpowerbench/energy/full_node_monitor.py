@@ -43,8 +43,18 @@ class FullNodeEnergyMonitor(GPUEnergyMonitor):
     Use ``create_monitor("full_node")`` rather than instantiating directly.
     """
 
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(
+        self,
+        *,
+        tensor_parallel_size: int = 1,
+        pipeline_parallel_size: int = 1,
+        data_parallel_size: int = 1,
+    ) -> None:
+        super().__init__(
+            tensor_parallel_size=tensor_parallel_size,
+            pipeline_parallel_size=pipeline_parallel_size,
+            data_parallel_size=data_parallel_size,
+        )
         self._rapl = _RaplReader()
         self._cpu_readings: List[Dict[str, float]] = []
         self._system_readings: List[float] = []

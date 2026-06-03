@@ -11,8 +11,9 @@ Qwen3-8B-quantized.w4a16/
 # Offline dataset exports (save_to_disk + JSONL; copy to cluster manually)
 
 
-# Benchmark outputs (keep results/ directory, ignore files inside)
-results/*
+# Benchmark outputs — all models, all JSON/logs under results/
+results/**
+!results/
 !results/.gitkeep
 
 # vLLM run logs
