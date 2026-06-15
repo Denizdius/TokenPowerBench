@@ -103,9 +103,8 @@ def parse_args():
         type=int,
         default=1,
         help=(
-            "vLLM data_parallel_size (default: 1). Values > 1 spawn one vLLM "
-            "process per DP rank (external-launcher pattern); requires "
-            "TP×PP×DP visible GPUs."
+            "vLLM data_parallel_size (default: 1). Pure DP (TP=PP=1, DP>1) uses "
+            "a multi-process launcher; TP/PP+DP uses a single vLLM engine."
         ),
     )
     p.add_argument(

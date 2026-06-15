@@ -41,8 +41,9 @@ class VLLMEngine(InferenceEngine):
     ``model`` may be a local directory or a Hugging Face Hub model id
     (e.g. ``unsloth/Qwen3-8B-Base-unsloth-bnb-4bit``).
 
-    When ``data_parallel_size > 1``, spawns one vLLM process per DP rank
-    (vLLM external-launcher pattern) and shards prompts across replicas.
+    When ``data_parallel_size > 1`` with ``tensor_parallel_size == 1`` and
+    ``pipeline_parallel_size == 1``, spawns one vLLM process per DP rank
+    (external-launcher pattern). Combined TP/PP+DP uses a single ``LLM()``.
     """
 
     def __init__(self) -> None:
@@ -56,6 +57,7 @@ class VLLMEngine(InferenceEngine):
         self._dp_ready_queue: Any = None
         self._dp_error_queue: Any = None
         self._dp_ctx: Any = None
+        self._use_dp_workers: bool = False
 
     @property
     def available(self) -> bool:
@@ -64,6 +66,11 @@ class VLLMEngine(InferenceEngine):
     @property
     def uses_data_parallel(self) -> bool:
         return self._dp_size > 1
+
+    @staticmethod
+    def _needs_dp_worker_launcher(dp: int, tp: int, pp: int) -> bool:
+        """Pure DP (TP=PP=1) needs multi-process external launcher in vLLM."""
+        return dp > 1 and tp == 1 and pp == 1
 
     def setup_model(
         self,
@@ -97,6 +104,7 @@ class VLLMEngine(InferenceEngine):
         dp = data_parallel_size
         self._dp_size = dp
         self._dp_worker_timeout_s = dp_worker_timeout_s
+        self._use_dp_workers = self._needs_dp_worker_launcher(dp, tp, pp)
 
         if max_model_len is None:
             max_model_len = _read_max_position_embeddings(model_path)
@@ -126,7 +134,8 @@ class VLLMEngine(InferenceEngine):
                 f"path={self._lora_request.lora_path}"
             )
 
-        if dp > 1:
+        if self._use_dp_workers:
+            print("[VLLMEngine] Using multi-process DP launcher (TP=PP=1).")
             return self._setup_data_parallel(
                 model_path=model_path,
                 tp=tp,
@@ -150,6 +159,8 @@ class VLLMEngine(InferenceEngine):
         llm_kwargs: dict = _language_model_only_kwargs(language_model_only)
         if pp != 1:
             llm_kwargs["pipeline_parallel_size"] = pp
+        if dp != 1:
+            llm_kwargs["data_parallel_size"] = dp
         if self._lora_request is not None:
             llm_kwargs["enable_lora"] = True
             llm_kwargs["max_lora_rank"] = max_lora_rank
@@ -315,7 +326,7 @@ class VLLMEngine(InferenceEngine):
             print(f"[VLLMEngine] DP worker rank {rank} error: {msg}")
 
     def shutdown(self) -> None:
-        if self._dp_size <= 1:
+        if not self._use_dp_workers:
             self._llm = None
             return
 
@@ -347,7 +358,7 @@ class VLLMEngine(InferenceEngine):
         max_tokens: int = 200,
         temperature: float = 0.7,
     ) -> List[Any]:
-        if self._dp_size > 1:
+        if self._use_dp_workers:
             return self._dp_run_inference(
                 prompts, batch_size, max_tokens, temperature
             )
@@ -420,9 +431,9 @@ class VLLMEngine(InferenceEngine):
         batch_size: int,
         max_tokens: int,
     ) -> Tuple[List[Any], float, float]:
-        if self._dp_size > 1 and not self._dp_processes:
+        if self._use_dp_workers and not self._dp_processes:
             return [], 0.0, 0.0
-        if self._dp_size <= 1 and self._llm is None:
+        if not self._use_dp_workers and self._llm is None:
             return [], 0.0, 0.0
 
         full: List[str] = []
