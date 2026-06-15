@@ -212,6 +212,7 @@ class VLLMEngine(InferenceEngine):
         if dp_num_nodes == 1:
             dp_master_ip = "127.0.0.1"
             dp_master_port_val = _vllm_get_open_port()
+            torch_master_port_val = _vllm_get_open_port()
         else:
             if not dp_master_addr:
                 print(
@@ -221,6 +222,13 @@ class VLLMEngine(InferenceEngine):
                 return None
             dp_master_ip = dp_master_addr
             dp_master_port_val = dp_master_port or _vllm_get_open_port()
+            torch_master_port_val = _vllm_get_open_port()
+
+        print(
+            f"[VLLMEngine] Starting {dp_per_node} DP worker process(es) on this node "
+            f"(global DP={dp}, dp_master={dp_master_ip}:{dp_master_port_val}, "
+            f"torch_master={dp_master_ip}:{torch_master_port_val})…"
+        )
 
         worker_config = {
             "model": model_path,
@@ -241,11 +249,6 @@ class VLLMEngine(InferenceEngine):
         if pp != 1:
             worker_config["pipeline_parallel_size"] = pp
 
-        print(
-            f"[VLLMEngine] Starting {dp_per_node} DP worker process(es) on this node "
-            f"(global DP={dp}, master={dp_master_ip}:{dp_master_port_val})…"
-        )
-
         self._dp_ctx = get_context("spawn")
         self._dp_task_queues = [self._dp_ctx.Queue() for _ in range(dp)]
         self._dp_result_queue = self._dp_ctx.Queue()
@@ -265,8 +268,11 @@ class VLLMEngine(InferenceEngine):
                     global_dp_rank,
                     local_dp_rank,
                     dp,
+                    tp,
+                    pp,
                     dp_master_ip,
                     dp_master_port_val,
+                    torch_master_port_val,
                     worker_config,
                     self._dp_task_queues[global_dp_rank],
                     self._dp_result_queue,

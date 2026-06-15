@@ -60,12 +60,46 @@ def _run_batches(
     return results
 
 
+def configure_distributed_env(
+    *,
+    global_dp_rank: int,
+    local_dp_rank: int,
+    dp_size: int,
+    tensor_parallel_size: int,
+    pipeline_parallel_size: int,
+    dp_master_ip: str,
+    dp_master_port: int,
+    torch_master_port: int,
+) -> None:
+    """Set env vars required by vLLM external_launcher + torch.distributed."""
+    ranks_per_dp = tensor_parallel_size * pipeline_parallel_size
+    world_size = ranks_per_dp * dp_size
+
+    os.environ["VLLM_DP_RANK"] = str(global_dp_rank)
+    os.environ["VLLM_DP_RANK_LOCAL"] = str(local_dp_rank)
+    os.environ["VLLM_DP_SIZE"] = str(dp_size)
+    os.environ["VLLM_DP_MASTER_IP"] = dp_master_ip
+    os.environ["VLLM_DP_MASTER_PORT"] = str(dp_master_port)
+    os.environ["VLLM_ALLOW_LONG_MAX_MODEL_LEN"] = "1"
+    os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
+
+    # ExecutorWithExternalLauncher reads these for env:// init.
+    os.environ["RANK"] = str(global_dp_rank * ranks_per_dp)
+    os.environ["LOCAL_RANK"] = str(local_dp_rank * ranks_per_dp)
+    os.environ["WORLD_SIZE"] = str(world_size)
+    os.environ["MASTER_ADDR"] = dp_master_ip
+    os.environ["MASTER_PORT"] = str(torch_master_port)
+
+
 def vllm_dp_worker_entry(
     global_dp_rank: int,
     local_dp_rank: int,
     dp_size: int,
+    tensor_parallel_size: int,
+    pipeline_parallel_size: int,
     dp_master_ip: str,
     dp_master_port: int,
+    torch_master_port: int,
     config: dict,
     task_queue,
     result_queue,
@@ -74,12 +108,16 @@ def vllm_dp_worker_entry(
 ) -> None:
     """Entry point for one data-parallel vLLM worker process."""
     try:
-        os.environ["VLLM_DP_RANK"] = str(global_dp_rank)
-        os.environ["VLLM_DP_RANK_LOCAL"] = str(local_dp_rank)
-        os.environ["VLLM_DP_SIZE"] = str(dp_size)
-        os.environ["VLLM_DP_MASTER_IP"] = dp_master_ip
-        os.environ["VLLM_DP_MASTER_PORT"] = str(dp_master_port)
-        os.environ["VLLM_ALLOW_LONG_MAX_MODEL_LEN"] = "1"
+        configure_distributed_env(
+            global_dp_rank=global_dp_rank,
+            local_dp_rank=local_dp_rank,
+            dp_size=dp_size,
+            tensor_parallel_size=tensor_parallel_size,
+            pipeline_parallel_size=pipeline_parallel_size,
+            dp_master_ip=dp_master_ip,
+            dp_master_port=dp_master_port,
+            torch_master_port=torch_master_port,
+        )
 
         print(
             f"[VLLMDPWorker rank={global_dp_rank}] Loading model "
