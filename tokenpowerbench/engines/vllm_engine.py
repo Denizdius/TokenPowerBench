@@ -41,9 +41,9 @@ class VLLMEngine(InferenceEngine):
     ``model`` may be a local directory or a Hugging Face Hub model id
     (e.g. ``unsloth/Qwen3-8B-Base-unsloth-bnb-4bit``).
 
-    When ``data_parallel_size > 1`` with ``tensor_parallel_size == 1`` and
-    ``pipeline_parallel_size == 1``, spawns one vLLM process per DP rank
-    (external-launcher pattern). Combined TP/PP+DP uses a single ``LLM()``.
+    When ``data_parallel_size > 1``, spawns one vLLM process per DP rank
+    (external-launcher pattern). vLLM does not support ``data_parallel_size>1``
+    in a single process for any TP/PP configuration.
     """
 
     def __init__(self) -> None:
@@ -69,8 +69,8 @@ class VLLMEngine(InferenceEngine):
 
     @staticmethod
     def _needs_dp_worker_launcher(dp: int, tp: int, pp: int) -> bool:
-        """Pure DP (TP=PP=1) needs multi-process external launcher in vLLM."""
-        return dp > 1 and tp == 1 and pp == 1
+        """vLLM requires multi-process external launcher whenever DP > 1."""
+        return dp > 1
 
     def setup_model(
         self,
@@ -135,7 +135,10 @@ class VLLMEngine(InferenceEngine):
             )
 
         if self._use_dp_workers:
-            print("[VLLMEngine] Using multi-process DP launcher (TP=PP=1).")
+            print(
+                f"[VLLMEngine] Using multi-process DP launcher "
+                f"(TP={tp} PP={pp} DP={dp})."
+            )
             return self._setup_data_parallel(
                 model_path=model_path,
                 tp=tp,
@@ -159,8 +162,6 @@ class VLLMEngine(InferenceEngine):
         llm_kwargs: dict = _language_model_only_kwargs(language_model_only)
         if pp != 1:
             llm_kwargs["pipeline_parallel_size"] = pp
-        if dp != 1:
-            llm_kwargs["data_parallel_size"] = dp
         if self._lora_request is not None:
             llm_kwargs["enable_lora"] = True
             llm_kwargs["max_lora_rank"] = max_lora_rank
