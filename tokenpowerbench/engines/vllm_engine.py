@@ -13,7 +13,11 @@ from typing import Any, List, Optional, Tuple
 import torch
 
 from .base import InferenceEngine
-from .vllm_dp_worker import shard_range, vllm_dp_worker_entry
+from .vllm_dp_worker import (
+    cuda_visible_devices_for_replica,
+    shard_range,
+    vllm_dp_worker_entry,
+)
 
 try:
     from vllm import LLM, SamplingParams
@@ -41,9 +45,11 @@ class VLLMEngine(InferenceEngine):
     ``model`` may be a local directory or a Hugging Face Hub model id
     (e.g. ``unsloth/Qwen3-8B-Base-unsloth-bnb-4bit``).
 
-    When ``data_parallel_size > 1``, spawns one vLLM process per DP rank
-    (external-launcher pattern). vLLM does not support ``data_parallel_size>1``
-    in a single process for any TP/PP configuration.
+    When ``data_parallel_size > 1``, spawns one process per DP rank:
+
+    - **TP=PP=1**: vLLM coordinated DP (external_launcher).
+    - **TP>1 or PP>1**: independent replicas with ``CUDA_VISIBLE_DEVICES``
+      per replica (avoids NCCL hang from incomplete TP×DP process groups).
     """
 
     def __init__(self) -> None:
@@ -135,9 +141,15 @@ class VLLMEngine(InferenceEngine):
             )
 
         if self._use_dp_workers:
+            use_coordinated = tp == 1 and pp == 1
+            mode = (
+                "coordinated external-launcher"
+                if use_coordinated
+                else "independent replicas (CUDA_VISIBLE_DEVICES)"
+            )
             print(
                 f"[VLLMEngine] Using multi-process DP launcher "
-                f"(TP={tp} PP={pp} DP={dp})."
+                f"(TP={tp} PP={pp} DP={dp}, mode={mode})."
             )
             return self._setup_data_parallel(
                 model_path=model_path,
@@ -221,6 +233,8 @@ class VLLMEngine(InferenceEngine):
             )
             return None
 
+        use_coordinated_dp = tp == 1 and pp == 1
+
         if dp_num_nodes == 1:
             dp_master_ip = "127.0.0.1"
             dp_master_port_val = _vllm_get_open_port()
@@ -238,8 +252,8 @@ class VLLMEngine(InferenceEngine):
 
         print(
             f"[VLLMEngine] Starting {dp_per_node} DP worker process(es) on this node "
-            f"(global DP={dp}, dp_master={dp_master_ip}:{dp_master_port_val}, "
-            f"torch_master={dp_master_ip}:{torch_master_port_val})…"
+            f"(global DP={dp}, coordinated={use_coordinated_dp}, "
+            f"dp_master={dp_master_ip}:{dp_master_port_val})…"
         )
 
         worker_config = {
@@ -250,8 +264,6 @@ class VLLMEngine(InferenceEngine):
             "trust_remote_code": True,
             "enforce_eager": enforce_eager,
             "dtype": dtype,
-            "data_parallel_size": dp,
-            "distributed_executor_backend": "external_launcher",
             "lora_path": lora_resolved,
             "lora_name": lora_name,
             "lora_int_id": lora_int_id,
@@ -260,6 +272,9 @@ class VLLMEngine(InferenceEngine):
         }
         if pp != 1:
             worker_config["pipeline_parallel_size"] = pp
+        if use_coordinated_dp:
+            worker_config["data_parallel_size"] = dp
+            worker_config["distributed_executor_backend"] = "external_launcher"
 
         self._dp_ctx = get_context("spawn")
         self._dp_task_queues = [self._dp_ctx.Queue() for _ in range(dp)]
@@ -274,14 +289,19 @@ class VLLMEngine(InferenceEngine):
         ))
         self._dp_active_ranks = global_ranks
         for local_dp_rank, global_dp_rank in enumerate(global_ranks):
+            cuda_vis = None
+            if not use_coordinated_dp:
+                cuda_vis = cuda_visible_devices_for_replica(
+                    global_dp_rank, tp, pp
+                )
             proc = self._dp_ctx.Process(
                 target=vllm_dp_worker_entry,
                 args=(
                     global_dp_rank,
                     local_dp_rank,
                     dp,
-                    tp,
-                    pp,
+                    use_coordinated_dp,
+                    cuda_vis,
                     dp_master_ip,
                     dp_master_port_val,
                     torch_master_port_val,
