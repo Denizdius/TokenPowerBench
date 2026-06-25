@@ -179,6 +179,15 @@ def parse_args():
 
     p.add_argument("--output-dir", default="./results",
                    help="Directory for result JSON files")
+    p.add_argument(
+        "--run-tag",
+        default=None,
+        help=(
+            "Optional label used as the result JSON filename stem "
+            "(e.g. qwen3_14b_dp2_bs128_out500). When set, output is "
+            "{run_tag}_{timestamp}.json instead of the auto-generated name."
+        ),
+    )
 
     return p.parse_args()
 
@@ -334,11 +343,15 @@ def run():
                 "total_mj_per_token": metrics.total_mj_per_token,
             }
 
-        model_slug = args.model.rstrip("/").replace("/", "--")
+        model_slug = os.path.basename(args.model.rstrip("/"))
         timestamp = time.strftime("%Y%m%d_%H%M%S")
-        out_file = output_dir / (
-            f"{model_slug}_{args.engine}_b{'_'.join(str(b) for b in batch_sizes)}_{timestamp}.json"
-        )
+        if args.run_tag:
+            out_file = output_dir / f"{args.run_tag}_{timestamp}.json"
+        else:
+            out_file = output_dir / (
+                f"{model_slug}_{args.engine}_"
+                f"b{'_'.join(str(b) for b in batch_sizes)}_{timestamp}.json"
+            )
         with open(out_file, "w") as f:
             json.dump(all_results, f, indent=2)
         print(f"\nResults saved to: {out_file}")

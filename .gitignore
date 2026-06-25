@@ -16,6 +16,10 @@ results/**
 !results/
 !results/.gitkeep
 
+# Synced benchmark result folders (JSON + job logs)
+tokenbench_qwen3_14b/
+tokenbench_qwen3.5_27b/
+
 # vLLM run logs
 vllm_run_single_node.txt
 vllm_run_single_node_ts.txt

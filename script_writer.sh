@@ -15,8 +15,8 @@ STRATS_14B=("single" "tp2" "dp2" "pp2")
 STRATS_27B=("single" "tp2" "dp2" "pp2" "tp4" "dp4" "pp4" "tp2_dp2" "tp2_pp2" "pp2_dp2")
 
 # Create output directory to keep your workspace clean
-OUT_DIR="benchmark_scripts"
-mkdir -p "$OUT_DIR"
+SCRIPTS_DIR="benchmark_scripts"
+mkdir -p "$SCRIPTS_DIR"
 
 # 4. Generator Function
 generate_scripts() {
@@ -45,13 +45,15 @@ generate_scripts() {
 
     # Add the specific flag ONLY if the model is Qwen3.5-27B
     local extra_flags=""
+    local run_tag_suffix=""
     if [ "$model_name" == "qwen3.5_27b" ]; then
-        extra_flags="--language-model-only"
+        extra_flags="  --language-model-only"
+        run_tag_suffix=" \\"
     fi
 
     local base_name="${model_name}_${strat}_bs${bs}_out${out}"
-    local run_script="${OUT_DIR}/run_${base_name}.sh"
-    local nsys_script="${OUT_DIR}/nsys_${base_name}.sh"
+    local run_script="${SCRIPTS_DIR}/run_${base_name}.sh"
+    local nsys_script="${SCRIPTS_DIR}/nsys_${base_name}.sh"
 
     # --- Write the Execution Script ---
     cat <<EOT > "$run_script"
@@ -73,7 +75,9 @@ python3 run_single_node.py \\
   --data-parallel-size $dp \\
   --max-model-len 2048 \\
   --enforce-eager \\
-  --monitor gpu_only $extra_flags
+  --monitor gpu_only \\
+  --run-tag "$base_name"${run_tag_suffix}
+${extra_flags}
 EOT
     chmod +x "$run_script"
 
@@ -92,9 +96,9 @@ nsys profile \\
   --cpuctxsw=none \\
   --trace-fork-before-exec=true \\
   --stats=true \\
-  -o "${OUT_DIR}/${base_name}_profile" \\
+  -o "${SCRIPTS_DIR}/${base_name}_profile" \\
   --force-overwrite=true \\
-  ./${OUT_DIR}/run_${base_name}.sh > "${OUT_DIR}/${base_name}_log.txt"
+  ./${SCRIPTS_DIR}/run_${base_name}.sh > "${SCRIPTS_DIR}/${base_name}_log.txt"
 EOT
     chmod +x "$nsys_script"
 }
@@ -117,4 +121,4 @@ for w in "${WORKLOADS[@]}"; do
     done
 done
 
-echo "Success! Scripts generated securely with absolute paths."
+echo "Success! Scripts generated with absolute paths and clean result filenames."

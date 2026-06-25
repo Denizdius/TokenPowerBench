@@ -16,4 +16,6 @@ python3 run_single_node.py \
   --data-parallel-size 1 \
   --max-model-len 2048 \
   --enforce-eager \
-  --monitor gpu_only --language-model-only
+  --monitor gpu_only \
+  --run-tag "qwen3.5_27b_tp4_bs256_out500" \
+  --language-model-only
