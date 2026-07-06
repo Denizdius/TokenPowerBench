@@ -1,0 +1,49 @@
+{
+  "batch_128": {
+    "model": "/gpfs/projects/etur83/my_volume/lm-evaluation-harness/Qwen3-14B",
+    "engine": "vllm",
+    "dataset": "alpaca",
+    "dataset_path": "/gpfs/projects/etur83/my_volume/lm-evaluation-harness/TokenPowerBench/alpaca.jsonl",
+    "batch_size": 128,
+    "num_samples": 1024,
+    "output_tokens": 500,
+    "gpu_memory_utilization": 0.9,
+    "max_model_len_cli": 2048,
+    "tensor_parallel_size": 1,
+    "pipeline_parallel_size": 1,
+    "data_parallel_size": 2,
+    "dp_num_nodes": 1,
+    "dp_node_rank": 0,
+    "enforce_eager": true,
+    "language_model_only": false,
+    "dtype": "auto",
+    "lora_path": null,
+    "max_lora_rank": null,
+    "lora_name": null,
+    "monitor_mode": "gpu_only",
+    "duration_s": 55.71553301811218,
+    "total_output_tokens": 469160,
+    "num_responses": 1024,
+    "gpu_avg_power_w": 868.5753600000005,
+    "gpu_energy_j": 48393.139148798706,
+    "gpu_mj_per_token": 103.1484763168188,
+    "per_gpu_power_w": {
+      "0": 432.86582736842144,
+      "1": 435.709532631579,
+      "2": 65.2478357894737,
+      "3": 68.07938947368417
+    },
+    "gpus_included_for_energy": [
+      0,
+      1
+    ],
+    "cpu_avg_power_w": 0.0,
+    "cpu_energy_j": 0.0,
+    "dram_avg_power_w": 0.0,
+    "dram_energy_j": 0.0,
+    "system_avg_power_w": 0.0,
+    "system_energy_j": 0.0,
+    "total_energy_j": 48393.139148798706,
+    "total_mj_per_token": 103.1484763168188
+  }
+}
