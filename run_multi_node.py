@@ -86,6 +86,14 @@ def parse_args():
     p.add_argument("--monitor", default="auto",
                    choices=["auto", "gpu_only", "full_node"],
                    help="Energy monitor mode (default: auto)")
+    p.add_argument(
+        "--save-gpu-usage",
+        action="store_true",
+        help=(
+            "Save per-sample GPU power (W) and memory used (MB) for active "
+            "GPUs (TP×PP) to a JSON trace file next to the results."
+        ),
+    )
 
     # Output
     p.add_argument("--output-dir", default="./results")
@@ -163,7 +171,11 @@ def run():
                             )
 
                             engine = VLLMDistributedEngine(cluster, engine_config)
-                            monitor = create_monitor(args.monitor)
+                            monitor = create_monitor(
+                                args.monitor,
+                                tensor_parallel_size=tp,
+                                pipeline_parallel_size=pp,
+                            )
 
                             monitor.start()
                             t0 = time.time()
@@ -184,6 +196,20 @@ def run():
                             energy = monitor.compute_metrics(duration, total_tokens, num_responses)
                             print(energy.summary())
 
+                            # Save per-config file
+                            slug = model_name.replace("/", "_")
+                            ts = time.strftime("%Y%m%d_%H%M%S")
+                            stem = (
+                                f"{slug}_{dataset_name}_tp{tp}_pp{pp}"
+                                f"_c{concurrency}_b{batch_size}_{ts}"
+                            )
+                            fname = output_dir / f"{stem}.json"
+
+                            gpu_usage_file = None
+                            if args.save_gpu_usage:
+                                gpu_usage_path = output_dir / f"{stem}_gpu_usage.json"
+                                gpu_usage_file = str(monitor.save_gpu_usage(gpu_usage_path))
+
                             result["energy_metrics"] = {
                                 "monitor_mode": args.monitor,
                                 "duration_s": duration,
@@ -191,6 +217,7 @@ def run():
                                 "gpu_energy_j": energy.gpu_energy_j,
                                 "gpu_mj_per_token": energy.gpu_mj_per_token,
                                 "per_gpu_power_w": energy.per_gpu_power_w,
+                                "gpus_included_for_energy": energy.gpus_included_for_energy,
                                 "cpu_avg_power_w": energy.cpu_avg_power_w,
                                 "cpu_energy_j": energy.cpu_energy_j,
                                 "dram_avg_power_w": energy.dram_avg_power_w,
@@ -199,15 +226,9 @@ def run():
                                 "system_energy_j": energy.system_energy_j,
                                 "total_energy_j": energy.total_energy_j,
                                 "total_mj_per_token": energy.total_mj_per_token,
+                                "gpu_usage_file": gpu_usage_file,
                             }
 
-                            # Save per-config file
-                            slug = model_name.replace("/", "_")
-                            ts = time.strftime("%Y%m%d_%H%M%S")
-                            fname = (
-                                output_dir /
-                                f"{slug}_{dataset_name}_tp{tp}_pp{pp}_c{concurrency}_b{batch_size}_{ts}.json"
-                            )
                             with open(fname, "w") as f:
                                 json.dump(result, f, indent=2, ensure_ascii=False)
                             print(f"Saved: {fname}")
