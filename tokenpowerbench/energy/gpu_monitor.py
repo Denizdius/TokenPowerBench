@@ -99,6 +99,7 @@ class GPUEnergyMonitor(EnergyMonitor):
     def _reset_gpu_buffers(self) -> None:
         self._readings: List[List[float]] = []
         self._memory_readings: List[List[float]] = []
+        self._util_readings: List[List[float]] = []
         self._timestamps: List[float] = []
         self._sample_t0: Optional[float] = None
 
@@ -150,55 +151,95 @@ class GPUEnergyMonitor(EnergyMonitor):
             gpus_included_for_energy=list(active),
         )
 
-    def export_gpu_usage(self) -> Dict[str, Any]:
-        """
-        Return per-sample power and memory for active GPUs (TP×PP×DP).
+    def _meta(self, metric: str, unit: str, num_samples: int) -> Dict[str, Any]:
+        tp, pp, dp = self._parallel
+        return {
+            "metric": metric,
+            "unit": unit,
+            "sample_interval_s": _GPU_SAMPLE_INTERVAL,
+            "gpus_included": list(self._gpu_indices_for_energy),
+            "tensor_parallel_size": tp,
+            "pipeline_parallel_size": pp,
+            "data_parallel_size": dp,
+            "num_samples": num_samples,
+        }
 
-        Does not trim edges — this is the raw monitor trace for the run.
+    def _series_payload(
+        self,
+        metric: str,
+        unit: str,
+        values: List[List[float]],
+        timestamps: List[float],
+    ) -> Dict[str, Any]:
+        active = list(self._gpu_indices_for_energy)
+        samples = []
+        n = min(len(values), len(timestamps))
+        for i in range(n):
+            gpus: Dict[str, float] = {}
+            for gpu_idx in active:
+                v = values[i][gpu_idx] if gpu_idx < len(values[i]) else 0.0
+                gpus[str(gpu_idx)] = float(v)
+            samples.append({"t_s": float(timestamps[i]), "gpus": gpus})
+        payload = self._meta(metric, unit, len(samples))
+        payload["samples"] = samples
+        return payload
+
+    def export_gpu_traces(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Return three separate traces for active GPUs (TP×PP×DP):
+        power (W), memory (MB), utilization (%).
         """
         with self._lock:
             power = list(self._readings)
             memory = list(self._memory_readings)
+            util = list(self._util_readings)
             timestamps = list(self._timestamps)
 
-        active = list(self._gpu_indices_for_energy)
-        tp, pp, dp = self._parallel
-        samples = []
-        n = min(len(power), len(memory), len(timestamps))
-        for i in range(n):
-            gpus: Dict[str, Dict[str, float]] = {}
-            for gpu_idx in active:
-                pw = power[i][gpu_idx] if gpu_idx < len(power[i]) else 0.0
-                mem = memory[i][gpu_idx] if gpu_idx < len(memory[i]) else 0.0
-                gpus[str(gpu_idx)] = {
-                    "power_w": float(pw),
-                    "memory_used_mb": float(mem),
-                }
-            samples.append({"t_s": float(timestamps[i]), "gpus": gpus})
-
         return {
-            "sample_interval_s": _GPU_SAMPLE_INTERVAL,
-            "gpus_included": active,
-            "tensor_parallel_size": tp,
-            "pipeline_parallel_size": pp,
-            "data_parallel_size": dp,
-            "num_samples": len(samples),
-            "samples": samples,
+            "power": self._series_payload("power", "W", power, timestamps),
+            "memory": self._series_payload("memory_used", "MB", memory, timestamps),
+            "utilization": self._series_payload(
+                "utilization", "%", util, timestamps
+            ),
         }
 
-    def save_gpu_usage(self, path: Union[str, Path]) -> Path:
-        """Write active-GPU power/memory trace to JSON. Returns the path written."""
-        out = Path(path)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        payload = self.export_gpu_usage()
-        with open(out, "w") as f:
-            json.dump(payload, f, indent=2)
-        print(
-            f"[GPUEnergyMonitor] Saved GPU usage trace "
-            f"({payload['num_samples']} samples, "
-            f"GPUs {payload['gpus_included']}) → {out}"
-        )
-        return out
+    def save_gpu_usage(self, path_stem: Union[str, Path]) -> Dict[str, str]:
+        """
+        Write three JSON traces from ``path_stem``:
+
+            {stem}_gpu_power.json
+            {stem}_gpu_memory.json
+            {stem}_gpu_utilization.json
+
+        Returns a dict mapping metric name → file path.
+        """
+        stem = Path(path_stem)
+        # Allow callers to pass "..._gpu_usage" / "..._gpu_usage.json" for compat.
+        name = stem.name
+        for suffix in ("_gpu_usage.json", "_gpu_usage", ".json"):
+            if name.endswith(suffix):
+                name = name[: -len(suffix)]
+                break
+        stem = stem.with_name(name)
+        stem.parent.mkdir(parents=True, exist_ok=True)
+
+        traces = self.export_gpu_traces()
+        paths: Dict[str, str] = {}
+        for key, filename_key in (
+            ("power", "gpu_power"),
+            ("memory", "gpu_memory"),
+            ("utilization", "gpu_utilization"),
+        ):
+            out = stem.parent / f"{stem.name}_{filename_key}.json"
+            with open(out, "w") as f:
+                json.dump(traces[key], f, indent=2)
+            paths[key] = str(out)
+            print(
+                f"[GPUEnergyMonitor] Saved {key} trace "
+                f"({traces[key]['num_samples']} samples, "
+                f"GPUs {traces[key]['gpus_included']}) → {out}"
+            )
+        return paths
 
     def _sample_loop(self) -> None:
         while self._active:
@@ -207,6 +248,7 @@ class GPUEnergyMonitor(EnergyMonitor):
                 self._sample_t0 = now
             power_sample: List[float] = []
             memory_sample: List[float] = []
+            util_sample: List[float] = []
             for handle in self._handles:
                 try:
                     mw = pynvml.nvmlDeviceGetPowerUsage(handle)
@@ -218,8 +260,14 @@ class GPUEnergyMonitor(EnergyMonitor):
                     memory_sample.append(mem.used / (1024.0 * 1024.0))
                 except Exception:
                     memory_sample.append(0.0)
+                try:
+                    util = pynvml.nvmlDeviceGetUtilizationRates(handle)
+                    util_sample.append(float(util.gpu))
+                except Exception:
+                    util_sample.append(0.0)
             with self._lock:
                 self._readings.append(power_sample)
                 self._memory_readings.append(memory_sample)
+                self._util_readings.append(util_sample)
                 self._timestamps.append(now - self._sample_t0)
             time.sleep(_GPU_SAMPLE_INTERVAL)

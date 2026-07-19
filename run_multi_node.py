@@ -90,8 +90,8 @@ def parse_args():
         "--save-gpu-usage",
         action="store_true",
         help=(
-            "Save per-sample GPU power (W) and memory used (MB) for active "
-            "GPUs (TP×PP) to a JSON trace file next to the results."
+            "Save per-sample GPU power (W), memory used (MB), and utilization "
+            "(%) for active GPUs (TP×PP) as three JSON traces next to results."
         ),
     )
 
@@ -205,10 +205,11 @@ def run():
                             )
                             fname = output_dir / f"{stem}.json"
 
-                            gpu_usage_file = None
+                            gpu_usage_files = None
                             if args.save_gpu_usage:
-                                gpu_usage_path = output_dir / f"{stem}_gpu_usage.json"
-                                gpu_usage_file = str(monitor.save_gpu_usage(gpu_usage_path))
+                                gpu_usage_files = monitor.save_gpu_usage(
+                                    output_dir / stem
+                                )
 
                             result["energy_metrics"] = {
                                 "monitor_mode": args.monitor,
@@ -226,7 +227,17 @@ def run():
                                 "system_energy_j": energy.system_energy_j,
                                 "total_energy_j": energy.total_energy_j,
                                 "total_mj_per_token": energy.total_mj_per_token,
-                                "gpu_usage_file": gpu_usage_file,
+                                "gpu_power_file": (
+                                    gpu_usage_files["power"] if gpu_usage_files else None
+                                ),
+                                "gpu_memory_file": (
+                                    gpu_usage_files["memory"] if gpu_usage_files else None
+                                ),
+                                "gpu_utilization_file": (
+                                    gpu_usage_files["utilization"]
+                                    if gpu_usage_files
+                                    else None
+                                ),
                             }
 
                             with open(fname, "w") as f:

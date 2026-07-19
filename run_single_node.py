@@ -180,8 +180,8 @@ def parse_args():
         "--save-gpu-usage",
         action="store_true",
         help=(
-            "Save per-sample GPU power (W) and memory used (MB) for active "
-            "GPUs (TP×PP×DP) to a JSON trace file next to the results."
+            "Save per-sample GPU power (W), memory used (MB), and utilization "
+            "(%) for active GPUs (TP×PP×DP) as three JSON traces next to results."
         ),
     )
 
@@ -311,15 +311,14 @@ def run():
 
             print(metrics.summary())
 
-            gpu_usage_file = None
+            gpu_usage_files = None
             if args.save_gpu_usage:
                 model_slug = os.path.basename(args.model.rstrip("/"))
                 ts = time.strftime("%Y%m%d_%H%M%S")
                 stem = args.run_tag if args.run_tag else f"{model_slug}_{args.engine}"
-                gpu_usage_path = (
-                    output_dir / f"{stem}_batch{batch_size}_{ts}_gpu_usage.json"
+                gpu_usage_files = monitor.save_gpu_usage(
+                    output_dir / f"{stem}_batch{batch_size}_{ts}"
                 )
-                gpu_usage_file = str(monitor.save_gpu_usage(gpu_usage_path))
 
             all_results[f"batch_{batch_size}"] = {
                 "model": args.model,
@@ -359,7 +358,15 @@ def run():
                 "system_energy_j": metrics.system_energy_j,
                 "total_energy_j": metrics.total_energy_j,
                 "total_mj_per_token": metrics.total_mj_per_token,
-                "gpu_usage_file": gpu_usage_file,
+                "gpu_power_file": (
+                    gpu_usage_files["power"] if gpu_usage_files else None
+                ),
+                "gpu_memory_file": (
+                    gpu_usage_files["memory"] if gpu_usage_files else None
+                ),
+                "gpu_utilization_file": (
+                    gpu_usage_files["utilization"] if gpu_usage_files else None
+                ),
             }
 
         model_slug = os.path.basename(args.model.rstrip("/"))
