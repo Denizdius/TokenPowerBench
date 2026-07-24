@@ -19,12 +19,14 @@ SCRIPTS_DIR="benchmark_scripts"
 mkdir -p "$SCRIPTS_DIR"
 
 # 4. Generator Function
+# variant: "" (default) or "noeager"
 generate_scripts() {
     local model_name=$1
     local model_path=$2
     local strat=$3
     local bs=$4
     local out=$5
+    local variant=${6:-}
 
     local tp=1
     local pp=1
@@ -43,6 +45,26 @@ generate_scripts() {
         "pp2_dp2") pp=2; dp=2 ;;
     esac
 
+    local gpu_util="0.90"
+    local eager_block="  --enforce-eager \\"
+    local name_prefix=""
+    local run_body_after_max_len="  --monitor gpu_only \\"
+    local run_tag="${model_name}_${strat}_bs${bs}_out${out}"
+    local artifact_prefix="${run_tag}"
+
+    if [ "$variant" == "noeager" ]; then
+        gpu_util="0.85"
+        eager_block=""
+        name_prefix="noeager_"
+        run_tag="${run_tag}_noeager"
+        artifact_prefix="noeager_${model_name}_${strat}_bs${bs}_out${out}"
+    fi
+
+    if [ -n "$eager_block" ]; then
+        run_body_after_max_len="${eager_block}
+  --monitor gpu_only \\"
+    fi
+
     # Add the specific flag ONLY if the model is Qwen3.5-27B
     local extra_flags=""
     local run_tag_suffix=""
@@ -52,8 +74,9 @@ generate_scripts() {
     fi
 
     local base_name="${model_name}_${strat}_bs${bs}_out${out}"
-    local run_script="${SCRIPTS_DIR}/run_${base_name}.sh"
-    local nsys_script="${SCRIPTS_DIR}/nsys_${base_name}.sh"
+    local run_script="${SCRIPTS_DIR}/run_${name_prefix}${base_name}.sh"
+    local nsys_script="${SCRIPTS_DIR}/nsys_${name_prefix}${base_name}.sh"
+    local gpu_watch_script="${SCRIPTS_DIR}/gpu_watch_${name_prefix}${base_name}.sh"
 
     # --- Write the Execution Script ---
     cat <<EOT > "$run_script"
@@ -69,14 +92,13 @@ python3 run_single_node.py \\
   --batch-sizes $bs \\
   --num-samples 1024 \\
   --output-tokens $out \\
-  --gpu-memory-utilization 0.90 \\
+  --gpu-memory-utilization $gpu_util \\
   --tensor-parallel-size $tp \\
   --pipeline-parallel-size $pp \\
   --data-parallel-size $dp \\
   --max-model-len 2048 \\
-  --enforce-eager \\
-  --monitor gpu_only \\
-  --run-tag "$base_name"${run_tag_suffix}
+${run_body_after_max_len}
+  --run-tag "$run_tag"${run_tag_suffix}
 ${extra_flags}
 EOT
     chmod +x "$run_script"
@@ -96,11 +118,38 @@ nsys profile \\
   --cpuctxsw=none \\
   --trace-fork-before-exec=true \\
   --stats=true \\
-  -o "${SCRIPTS_DIR}/${base_name}_profile" \\
+  -o "${SCRIPTS_DIR}/${artifact_prefix}_profile" \\
   --force-overwrite=true \\
-  ./${SCRIPTS_DIR}/run_${base_name}.sh > "${SCRIPTS_DIR}/${base_name}_log.txt"
+  ./${SCRIPTS_DIR}/run_${name_prefix}${base_name}.sh > "${SCRIPTS_DIR}/${artifact_prefix}_log.txt"
 EOT
     chmod +x "$nsys_script"
+
+    if [ "$variant" == "noeager" ]; then
+        cat <<EOT > "$gpu_watch_script"
+#!/bin/bash
+
+# Navigate to the correct working directory to find the python script
+cd "${BASE_DIR}" || exit
+
+python3 run_single_node.py \\
+  --model "$model_path" \\
+  --dataset alpaca \\
+  --dataset-path "$DATASET_PATH" \\
+  --batch-sizes $bs \\
+  --num-samples 1024 \\
+  --output-tokens $out \\
+  --gpu-memory-utilization $gpu_util \\
+  --tensor-parallel-size $tp \\
+  --pipeline-parallel-size $pp \\
+  --data-parallel-size $dp \\
+  --max-model-len 2048 \\
+  --monitor gpu_only \\
+  --save-gpu-usage \\
+  --run-tag "$run_tag"${run_tag_suffix}
+${extra_flags}
+EOT
+        chmod +x "$gpu_watch_script"
+    fi
 }
 
 # 5. Generate 14B Scripts
@@ -118,6 +167,23 @@ for w in "${WORKLOADS[@]}"; do
     out=$(echo $w | cut -d'_' -f2)
     for s in "${STRATS_27B[@]}"; do
         generate_scripts "qwen3.5_27b" "$MODEL_27B" "$s" "$bs" "$out"
+    done
+done
+
+# 7. Generate no-eager variants (gpu util 0.85, no --enforce-eager)
+for w in "${WORKLOADS[@]}"; do
+    bs=$(echo $w | cut -d'_' -f1)
+    out=$(echo $w | cut -d'_' -f2)
+    for s in "${STRATS_14B[@]}"; do
+        generate_scripts "qwen3_14b" "$MODEL_14B" "$s" "$bs" "$out" "noeager"
+    done
+done
+
+for w in "${WORKLOADS[@]}"; do
+    bs=$(echo $w | cut -d'_' -f1)
+    out=$(echo $w | cut -d'_' -f2)
+    for s in "${STRATS_27B[@]}"; do
+        generate_scripts "qwen3.5_27b" "$MODEL_27B" "$s" "$bs" "$out" "noeager"
     done
 done
 
