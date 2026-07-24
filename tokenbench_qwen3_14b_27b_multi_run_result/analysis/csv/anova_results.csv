@@ -1,81 +1,21 @@
-test,factor_tested,model_key,model_name,workload,config,metric,metric_label,n_groups,n_observations,f_statistic,p_value,eta_squared
-one_way_config,config,qwen3.5_27b,Qwen3.5-27B,bs128_out500,(all configs),duration_s,Duration (s),10,100,42048.1329159545,5.258231839550258e-159,0.999762233858075
-one_way_config,config,qwen3.5_27b,Qwen3.5-27B,bs128_out500,(all configs),gpu_avg_power_w,Avg GPU power (W),10,100,48195.46038525044,1.1344980857904066e-161,0.9997925546209899
-one_way_config,config,qwen3.5_27b,Qwen3.5-27B,bs128_out500,(all configs),mj_per_token,Energy per token (mJ),10,100,21850.560000857684,3.2285293251181306e-146,0.9995425551770123
-one_way_config,config,qwen3.5_27b,Qwen3.5-27B,bs128_out500,(all configs),throughput_tok_s,Throughput (tok/s),10,100,12151.106842508862,9.320300766623399e-135,0.9991777064267671
-one_way_config,config,qwen3.5_27b,Qwen3.5-27B,bs256_out2000,(all configs),duration_s,Duration (s),10,100,24944.825511826723,8.353965191436124e-149,0.9995992758997547
-one_way_config,config,qwen3.5_27b,Qwen3.5-27B,bs256_out2000,(all configs),gpu_avg_power_w,Avg GPU power (W),10,100,20464.99927511091,6.146687634762859e-145,0.9995115994943079
-one_way_config,config,qwen3.5_27b,Qwen3.5-27B,bs256_out2000,(all configs),mj_per_token,Energy per token (mJ),10,100,26624.20680505004,4.4575363876547743e-150,0.9996245429768874
-one_way_config,config,qwen3.5_27b,Qwen3.5-27B,bs256_out2000,(all configs),throughput_tok_s,Throughput (tok/s),10,100,6773.619401014353,2.379484732851508e-123,0.9985258606934073
-one_way_config,config,qwen3.5_27b,Qwen3.5-27B,bs256_out500,(all configs),duration_s,Duration (s),10,100,88629.44705550597,1.4159840261973845e-173,0.9998871834117635
-one_way_config,config,qwen3.5_27b,Qwen3.5-27B,bs256_out500,(all configs),gpu_avg_power_w,Avg GPU power (W),10,100,24078.01125984525,4.099990515473849e-148,0.9995848557237818
-one_way_config,config,qwen3.5_27b,Qwen3.5-27B,bs256_out500,(all configs),mj_per_token,Energy per token (mJ),10,100,27203.327486775528,1.6932542014068052e-150,0.9996325329930762
-one_way_config,config,qwen3.5_27b,Qwen3.5-27B,bs256_out500,(all configs),throughput_tok_s,Throughput (tok/s),10,100,45839.18349980609,1.0819226530559419e-160,0.9997818936077665
-one_way_workload,workload,qwen3.5_27b,Qwen3.5-27B,(all workloads),DP2,duration_s,Duration (s),3,30,914238.3807844527,6.097007535953549e-66,0.9999852338285723
-one_way_workload,workload,qwen3.5_27b,Qwen3.5-27B,(all workloads),DP2,gpu_avg_power_w,Avg GPU power (W),3,30,109.20238850820884,1.1481275781323978e-13,0.889977691843394
-one_way_workload,workload,qwen3.5_27b,Qwen3.5-27B,(all workloads),DP2,mj_per_token,Energy per token (mJ),3,30,17006.685191063647,1.385122163786741e-42,0.9992068241415434
-one_way_workload,workload,qwen3.5_27b,Qwen3.5-27B,(all workloads),DP2,throughput_tok_s,Throughput (tok/s),3,30,8193.125846156396,2.619891586964271e-38,0.9983549877558626
-one_way_workload,workload,qwen3.5_27b,Qwen3.5-27B,(all workloads),DP4,duration_s,Duration (s),3,30,243251.2032104217,3.527264585704113e-58,0.9999445048960168
-one_way_workload,workload,qwen3.5_27b,Qwen3.5-27B,(all workloads),DP4,gpu_avg_power_w,Avg GPU power (W),3,30,11.121141505425168,0.00029980949873623954,0.4516907350934704
-one_way_workload,workload,qwen3.5_27b,Qwen3.5-27B,(all workloads),DP4,mj_per_token,Energy per token (mJ),3,30,6576.526213749135,5.064416976513543e-37,0.9979514497268857
-one_way_workload,workload,qwen3.5_27b,Qwen3.5-27B,(all workloads),DP4,throughput_tok_s,Throughput (tok/s),3,30,1515.911290013232,1.8553589151853877e-28,0.9911730741834133
-one_way_workload,workload,qwen3.5_27b,Qwen3.5-27B,(all workloads),PP2,duration_s,Duration (s),3,30,66898.01003611171,1.303901113450564e-50,0.9997982409903362
-one_way_workload,workload,qwen3.5_27b,Qwen3.5-27B,(all workloads),PP2,gpu_avg_power_w,Avg GPU power (W),3,30,282.6159359788501,7.848232142068922e-19,0.9544097484812033
-one_way_workload,workload,qwen3.5_27b,Qwen3.5-27B,(all workloads),PP2,mj_per_token,Energy per token (mJ),3,30,2629.3870109751742,1.151979688319247e-31,0.9948919496202678
-one_way_workload,workload,qwen3.5_27b,Qwen3.5-27B,(all workloads),PP2,throughput_tok_s,Throughput (tok/s),3,30,11828.108055628007,1.85550301139474e-40,0.9988599521334774
-one_way_workload,workload,qwen3.5_27b,Qwen3.5-27B,(all workloads),PP2 × DP2,duration_s,Duration (s),3,30,45959.59903488269,2.0687348899777932e-48,0.9997063500115633
-one_way_workload,workload,qwen3.5_27b,Qwen3.5-27B,(all workloads),PP2 × DP2,gpu_avg_power_w,Avg GPU power (W),3,30,530.1092690712003,2.153442874677453e-22,0.9751659863654124
-one_way_workload,workload,qwen3.5_27b,Qwen3.5-27B,(all workloads),PP2 × DP2,mj_per_token,Energy per token (mJ),3,30,2217.4095469852277,1.1350092147793321e-30,0.9939486564938307
-one_way_workload,workload,qwen3.5_27b,Qwen3.5-27B,(all workloads),PP2 × DP2,throughput_tok_s,Throughput (tok/s),3,30,7520.664127945932,8.308685820456655e-38,0.9982081622100685
-one_way_workload,workload,qwen3.5_27b,Qwen3.5-27B,(all workloads),PP4,duration_s,Duration (s),3,30,56052.54195537953,1.4192446181188071e-49,0.9997592125370516
-one_way_workload,workload,qwen3.5_27b,Qwen3.5-27B,(all workloads),PP4,gpu_avg_power_w,Avg GPU power (W),3,30,90.02847330986077,1.1381472245953604e-12,0.8696010907106262
-one_way_workload,workload,qwen3.5_27b,Qwen3.5-27B,(all workloads),PP4,mj_per_token,Energy per token (mJ),3,30,2723.395882448195,7.186528395624244e-32,0.9950674046146322
-one_way_workload,workload,qwen3.5_27b,Qwen3.5-27B,(all workloads),PP4,throughput_tok_s,Throughput (tok/s),3,30,13563.379959537664,2.928910959763561e-41,0.9990056625645783
-one_way_workload,workload,qwen3.5_27b,Qwen3.5-27B,(all workloads),Single GPU,duration_s,Duration (s),3,30,14251.547012045812,1.502510711005255e-41,0.9990536308791271
-one_way_workload,workload,qwen3.5_27b,Qwen3.5-27B,(all workloads),Single GPU,gpu_avg_power_w,Avg GPU power (W),3,30,202.36459686481373,5.598306717875748e-17,0.9374607962766046
-one_way_workload,workload,qwen3.5_27b,Qwen3.5-27B,(all workloads),Single GPU,mj_per_token,Energy per token (mJ),3,30,3720.9951993349105,1.0823685148522653e-33,0.9963850535937494
-one_way_workload,workload,qwen3.5_27b,Qwen3.5-27B,(all workloads),Single GPU,throughput_tok_s,Throughput (tok/s),3,30,4446.430409275396,9.853187893312338e-35,0.996973046939941
-one_way_workload,workload,qwen3.5_27b,Qwen3.5-27B,(all workloads),TP2,duration_s,Duration (s),3,30,17766.64071510107,7.680345538001359e-43,0.9992407259190847
-one_way_workload,workload,qwen3.5_27b,Qwen3.5-27B,(all workloads),TP2,gpu_avg_power_w,Avg GPU power (W),3,30,1893.835704738325,9.413248029944604e-30,0.9929220640255092
-one_way_workload,workload,qwen3.5_27b,Qwen3.5-27B,(all workloads),TP2,mj_per_token,Energy per token (mJ),3,30,2664.415223896777,9.643812272640601e-32,0.9949587649827252
-one_way_workload,workload,qwen3.5_27b,Qwen3.5-27B,(all workloads),TP2,throughput_tok_s,Throughput (tok/s),3,30,3580.225674206189,1.818232529549366e-33,0.9962434528331147
-one_way_workload,workload,qwen3.5_27b,Qwen3.5-27B,(all workloads),TP2 × DP2,duration_s,Duration (s),3,30,10779.39758640177,6.4884672627258925e-40,0.9987491774204351
-one_way_workload,workload,qwen3.5_27b,Qwen3.5-27B,(all workloads),TP2 × DP2,gpu_avg_power_w,Avg GPU power (W),3,30,3460.7450313615013,2.8700526646558633e-33,0.9961142637096291
-one_way_workload,workload,qwen3.5_27b,Qwen3.5-27B,(all workloads),TP2 × DP2,mj_per_token,Energy per token (mJ),3,30,1857.9715348946895,1.2162765270230646e-29,0.9927864251481882
-one_way_workload,workload,qwen3.5_27b,Qwen3.5-27B,(all workloads),TP2 × DP2,throughput_tok_s,Throughput (tok/s),3,30,4480.289639151111,8.896801553479287e-35,0.9969958540376738
-one_way_workload,workload,qwen3.5_27b,Qwen3.5-27B,(all workloads),TP2 × PP2,duration_s,Duration (s),3,30,90790.871104812,2.113803843633315e-52,0.9998513287429253
-one_way_workload,workload,qwen3.5_27b,Qwen3.5-27B,(all workloads),TP2 × PP2,gpu_avg_power_w,Avg GPU power (W),3,30,1081.861487827992,1.6806607794502408e-26,0.9876753015785028
-one_way_workload,workload,qwen3.5_27b,Qwen3.5-27B,(all workloads),TP2 × PP2,mj_per_token,Energy per token (mJ),3,30,4606.0157907414805,6.129904646473353e-35,0.9970776157910209
-one_way_workload,workload,qwen3.5_27b,Qwen3.5-27B,(all workloads),TP2 × PP2,throughput_tok_s,Throughput (tok/s),3,30,14696.850945860197,9.921901649211954e-42,0.999082278862708
-one_way_workload,workload,qwen3.5_27b,Qwen3.5-27B,(all workloads),TP4,duration_s,Duration (s),3,30,10148.756282455033,1.4626450354079717e-39,0.9986715548570344
-one_way_workload,workload,qwen3.5_27b,Qwen3.5-27B,(all workloads),TP4,gpu_avg_power_w,Avg GPU power (W),3,30,1692.2140292556473,4.253749241649957e-29,0.9920854259456979
-one_way_workload,workload,qwen3.5_27b,Qwen3.5-27B,(all workloads),TP4,mj_per_token,Energy per token (mJ),3,30,3674.8169998794083,1.2803379857538188e-33,0.9963397940034873
-one_way_workload,workload,qwen3.5_27b,Qwen3.5-27B,(all workloads),TP4,throughput_tok_s,Throughput (tok/s),3,30,3903.761558344684,5.678598595213441e-34,0.9965537149360769
-one_way_config,config,qwen3_14b,Qwen3-14B,bs128_out500,(all configs),duration_s,Duration (s),4,40,100600.04997642298,1.165501719554679e-70,0.9998807299920554
-one_way_config,config,qwen3_14b,Qwen3-14B,bs128_out500,(all configs),gpu_avg_power_w,Avg GPU power (W),4,40,122706.30694635473,3.26474233118399e-72,0.9999022150785928
-one_way_config,config,qwen3_14b,Qwen3-14B,bs128_out500,(all configs),mj_per_token,Energy per token (mJ),4,40,16892.147125895306,1.0237940016652914e-56,0.9992901150285419
-one_way_config,config,qwen3_14b,Qwen3-14B,bs128_out500,(all configs),throughput_tok_s,Throughput (tok/s),4,40,139163.8706561172,3.3889771156750216e-73,0.9999137781574963
-one_way_config,config,qwen3_14b,Qwen3-14B,bs256_out2000,(all configs),duration_s,Duration (s),4,40,1672.0138233004757,1.0928103191193994e-38,0.9928741677568408
-one_way_config,config,qwen3_14b,Qwen3-14B,bs256_out2000,(all configs),gpu_avg_power_w,Avg GPU power (W),4,40,67479.07819371739,1.5408708732235102e-67,0.9998221987213542
-one_way_config,config,qwen3_14b,Qwen3-14B,bs256_out2000,(all configs),mj_per_token,Energy per token (mJ),4,40,426.5131152923054,3.571469611664539e-28,0.9726347979535341
-one_way_config,config,qwen3_14b,Qwen3-14B,bs256_out2000,(all configs),throughput_tok_s,Throughput (tok/s),4,40,10540.984279230526,4.934556476558447e-53,0.9988628808986653
-one_way_config,config,qwen3_14b,Qwen3-14B,bs256_out500,(all configs),duration_s,Duration (s),4,40,168672.47631291332,1.0638261781795519e-74,0.9999288612665356
-one_way_config,config,qwen3_14b,Qwen3-14B,bs256_out500,(all configs),gpu_avg_power_w,Avg GPU power (W),4,40,23149.960624177875,3.533255707255959e-59,0.9994819091442767
-one_way_config,config,qwen3_14b,Qwen3-14B,bs256_out500,(all configs),mj_per_token,Energy per token (mJ),4,40,2147.8351279332155,1.2402825150869018e-40,0.9944440203584044
-one_way_config,config,qwen3_14b,Qwen3-14B,bs256_out500,(all configs),throughput_tok_s,Throughput (tok/s),4,40,123696.7821844323,2.8249313104528317e-72,0.9999029979942554
-one_way_workload,workload,qwen3_14b,Qwen3-14B,(all workloads),DP2,duration_s,Duration (s),3,30,7339080.941241432,3.7439707236104646e-78,0.9999981605360023
-one_way_workload,workload,qwen3_14b,Qwen3-14B,(all workloads),DP2,gpu_avg_power_w,Avg GPU power (W),3,30,24858.097553734147,8.270012586000173e-45,0.9994572121886872
-one_way_workload,workload,qwen3_14b,Qwen3-14B,(all workloads),DP2,mj_per_token,Energy per token (mJ),3,30,104970.49699522555,2.980876470208823e-53,0.9998714089729258
-one_way_workload,workload,qwen3_14b,Qwen3-14B,(all workloads),DP2,throughput_tok_s,Throughput (tok/s),3,30,2153826.4352062116,5.769320097532857e-71,0.9999937321247595
-one_way_workload,workload,qwen3_14b,Qwen3-14B,(all workloads),PP2,duration_s,Duration (s),3,30,50514.567572076805,5.7784927348477875e-49,0.9997328217632561
-one_way_workload,workload,qwen3_14b,Qwen3-14B,(all workloads),PP2,gpu_avg_power_w,Avg GPU power (W),3,30,1535.9096185307715,1.5569029121330805e-28,0.991287003876481
-one_way_workload,workload,qwen3_14b,Qwen3-14B,(all workloads),PP2,mj_per_token,Energy per token (mJ),3,30,12038.332127978523,1.4631517799815139e-40,0.9988798383634423
-one_way_workload,workload,qwen3_14b,Qwen3-14B,(all workloads),PP2,throughput_tok_s,Throughput (tok/s),3,30,38669.68156788771,2.127925215143246e-47,0.9996510111254345
-one_way_workload,workload,qwen3_14b,Qwen3-14B,(all workloads),Single GPU,duration_s,Duration (s),3,30,4412.853686621,1.0911472111063978e-34,0.9969500855657322
-one_way_workload,workload,qwen3_14b,Qwen3-14B,(all workloads),Single GPU,gpu_avg_power_w,Avg GPU power (W),3,30,7796.610527394401,5.112507344245374e-38,0.9982714713251942
-one_way_workload,workload,qwen3_14b,Qwen3-14B,(all workloads),Single GPU,mj_per_token,Energy per token (mJ),3,30,2336.0604720928914,5.638796316396302e-31,0.9942542445021749
-one_way_workload,workload,qwen3_14b,Qwen3-14B,(all workloads),Single GPU,throughput_tok_s,Throughput (tok/s),3,30,12338.745697425917,1.04938761237119e-40,0.9989070813250731
-one_way_workload,workload,qwen3_14b,Qwen3-14B,(all workloads),TP2,duration_s,Duration (s),3,30,75336.98596144289,2.6232766731697884e-51,0.9998208372536987
-one_way_workload,workload,qwen3_14b,Qwen3-14B,(all workloads),TP2,gpu_avg_power_w,Avg GPU power (W),3,30,8265.23180353805,2.3280611987360337e-38,0.9983693154555111
-one_way_workload,workload,qwen3_14b,Qwen3-14B,(all workloads),TP2,mj_per_token,Energy per token (mJ),3,30,21175.145590817312,7.196357284884509e-44,0.9993628663077058
-one_way_workload,workload,qwen3_14b,Qwen3-14B,(all workloads),TP2,throughput_tok_s,Throughput (tok/s),3,30,44739.61786004739,2.9743451481821605e-48,0.9996983450395085
+model_name,workload,config,n_groups,n_observations,duration_f,duration_p,duration_eta,throughput_f,throughput_p,throughput_eta,mj_per_token_f,mj_per_token_p,mj_per_token_eta,gpu_avg_power_f,gpu_avg_power_p,gpu_avg_power_eta
+Qwen3.5-27B,bs128_out500,,10,100,42048.13,5.258231839550258e-159,1.00,12151.11,9.320300766623399e-135,1.00,21850.56,3.2285293251181306e-146,1.00,48195.46,1.1344980857904066e-161,1.00
+Qwen3.5-27B,bs256_out2000,,10,100,24944.83,8.353965191436124e-149,1.00,6773.62,2.379484732851508e-123,1.00,26624.21,4.4575363876547743e-150,1.00,20465.00,6.146687634762859e-145,1.00
+Qwen3.5-27B,bs256_out500,,10,100,88629.45,1.4159840261973845e-173,1.00,45839.18,1.0819226530559419e-160,1.00,27203.33,1.6932542014068052e-150,1.00,24078.01,4.099990515473849e-148,1.00
+Qwen3.5-27B,,DP2,3,30,914238.38,6.097007535953549e-66,1.00,8193.13,2.619891586964271e-38,1.00,17006.69,1.385122163786741e-42,1.00,109.20,1.1481275781323978e-13,0.89
+Qwen3.5-27B,,DP4,3,30,243251.20,3.527264585704113e-58,1.00,1515.91,1.8553589151853877e-28,0.99,6576.53,5.064416976513543e-37,1.00,11.12,0.00029980949873623954,0.45
+Qwen3.5-27B,,PP2,3,30,66898.01,1.303901113450564e-50,1.00,11828.11,1.85550301139474e-40,1.00,2629.39,1.151979688319247e-31,0.99,282.62,7.848232142068922e-19,0.95
+Qwen3.5-27B,,PP2 × DP2,3,30,45959.60,2.0687348899777932e-48,1.00,7520.66,8.308685820456655e-38,1.00,2217.41,1.1350092147793321e-30,0.99,530.11,2.153442874677453e-22,0.98
+Qwen3.5-27B,,PP4,3,30,56052.54,1.4192446181188071e-49,1.00,13563.38,2.928910959763561e-41,1.00,2723.40,7.186528395624244e-32,1.00,90.03,1.1381472245953604e-12,0.87
+Qwen3.5-27B,,Single GPU,3,30,14251.55,1.502510711005255e-41,1.00,4446.43,9.853187893312338e-35,1.00,3721.00,1.0823685148522653e-33,1.00,202.36,5.598306717875748e-17,0.94
+Qwen3.5-27B,,TP2,3,30,17766.64,7.680345538001359e-43,1.00,3580.23,1.818232529549366e-33,1.00,2664.42,9.643812272640601e-32,0.99,1893.84,9.413248029944604e-30,0.99
+Qwen3.5-27B,,TP2 × DP2,3,30,10779.40,6.4884672627258925e-40,1.00,4480.29,8.896801553479287e-35,1.00,1857.97,1.2162765270230646e-29,0.99,3460.75,2.8700526646558633e-33,1.00
+Qwen3.5-27B,,TP2 × PP2,3,30,90790.87,2.113803843633315e-52,1.00,14696.85,9.921901649211954e-42,1.00,4606.02,6.129904646473353e-35,1.00,1081.86,1.6806607794502408e-26,0.99
+Qwen3.5-27B,,TP4,3,30,10148.76,1.4626450354079717e-39,1.00,3903.76,5.678598595213441e-34,1.00,3674.82,1.2803379857538188e-33,1.00,1692.21,4.253749241649957e-29,0.99
+Qwen3-14B,bs128_out500,,4,40,100600.05,1.165501719554679e-70,1.00,139163.87,3.3889771156750216e-73,1.00,16892.15,1.0237940016652914e-56,1.00,122706.31,3.26474233118399e-72,1.00
+Qwen3-14B,bs256_out2000,,4,40,1672.01,1.0928103191193994e-38,0.99,10540.98,4.934556476558447e-53,1.00,426.51,3.571469611664539e-28,0.97,67479.08,1.5408708732235102e-67,1.00
+Qwen3-14B,bs256_out500,,4,40,168672.48,1.0638261781795519e-74,1.00,123696.78,2.8249313104528317e-72,1.00,2147.84,1.2402825150869018e-40,0.99,23149.96,3.533255707255959e-59,1.00
+Qwen3-14B,,DP2,3,30,7339080.94,3.7439707236104646e-78,1.00,2153826.44,5.769320097532857e-71,1.00,104970.50,2.980876470208823e-53,1.00,24858.10,8.270012586000173e-45,1.00
+Qwen3-14B,,PP2,3,30,50514.57,5.7784927348477875e-49,1.00,38669.68,2.127925215143246e-47,1.00,12038.33,1.4631517799815139e-40,1.00,1535.91,1.5569029121330805e-28,0.99
+Qwen3-14B,,Single GPU,3,30,4412.85,1.0911472111063978e-34,1.00,12338.75,1.04938761237119e-40,1.00,2336.06,5.638796316396302e-31,0.99,7796.61,5.112507344245374e-38,1.00
+Qwen3-14B,,TP2,3,30,75336.99,2.6232766731697884e-51,1.00,44739.62,2.9743451481821605e-48,1.00,21175.15,7.196357284884509e-44,1.00,8265.23,2.3280611987360337e-38,1.00

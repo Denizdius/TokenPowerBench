@@ -9,10 +9,11 @@
 | File | Description |
 |------|-------------|
 | `raw_measurements.csv` | All per-run measurements |
-| `summary_by_config.csv` | Mean, std, percentiles, average min max excluded per config |
-| `min_max_spread.csv` | Min/max spread for throughput, energy, duration |
-| `anova_results.csv` | One-way ANOVA |
-| `factorial_anova.csv` | Two-way config×workload ANOVA per model |
+| `summary_by_config.csv` | One row per config with average duration, throughput, mj_per_token, gpu_avg_power |
+| `min_max_spread.csv` | Min/max spread per config (metrics as columns) |
+| `anova_results.csv` | One-way ANOVA (metrics as columns) |
+| `factorial_anova.csv` | Two-way config×workload ANOVA per model (metrics as columns) |
+| `model_anova.csv` | Model comparison ANOVA per config×workload (metrics as columns) |
 
 ## Plots
 
@@ -23,8 +24,6 @@
 ## Statistics notes
 
 - **Average min max excluded**: for 10 runs, drops the single lowest and highest value before averaging.
-- **One-way ANOVA (config)**: tests whether parallel strategy affects each metric within a model×workload (`factor_tested=config`, workload fixed).
-- **One-way ANOVA (workload)**: tests whether workload affects each metric within a model×config (`factor_tested=workload`, config fixed).
-- Rows use `(all configs)` or `(all workloads)` when that factor is the one being compared.
+- **One-way ANOVA**: compares configs (workload fixed, config blank) or workloads (config fixed, workload blank) per metric.
 - **Two-way ANOVA**: config × workload interaction per model; η² reports effect size.
 - **p99 / p95**: run-to-run percentiles from repeated benchmark executions, not request latency.

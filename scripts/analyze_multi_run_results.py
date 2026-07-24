@@ -26,6 +26,25 @@ from scipy import stats
 
 ROOT = Path(__file__).resolve().parents[1]
 
+DECIMALS = 2
+INTEGER_COLUMNS = {
+    "run_id",
+    "batch_size",
+    "output_tokens",
+    "n_runs",
+    "n_groups",
+    "n_observations",
+    "min_run_id",
+    "max_run_id",
+    "n",
+}
+PRESERVE_PRECISION_COLUMNS = {
+    "p_value",
+    "p_a",
+    "p_b",
+    "p_interaction",
+}
+
 SCENARIOS = [
     ("bs128_out500", 128, 500, "Normal (batch 128 · 500 output tokens)"),
     ("bs256_out500", 256, 500, "High concurrency (batch 256 · 500 output tokens)"),
@@ -56,6 +75,15 @@ METRICS = [
     ("mj_per_token", "Energy per token (mJ)", "#C44E52"),
     ("gpu_avg_power_w", "Avg GPU power (W)", "#8172B3"),
 ]
+
+METRIC_KEYS = [m[0] for m in METRICS]
+METRIC_COLUMNS = {
+    "duration_s": "duration",
+    "throughput_tok_s": "throughput",
+    "mj_per_token": "mj_per_token",
+    "gpu_avg_power_w": "gpu_avg_power",
+}
+METRIC_COLUMN_ORDER = [METRIC_COLUMNS[k] for k in METRIC_KEYS]
 
 JSON_NAME_RE = re.compile(
     r"^(qwen3(?:\.5_27b|_14b))_(.+)_bs(\d+)_out(\d+)_(\d{8}_\d{6})\.json$"
@@ -164,32 +192,46 @@ def load_all_records(data_root: Path) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def round2(value: float) -> float:
+    return round(float(value), DECIMALS)
+
+
+def round_dataframe_floats(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    for col in out.columns:
+        if col in INTEGER_COLUMNS or col in PRESERVE_PRECISION_COLUMNS:
+            continue
+        if pd.api.types.is_numeric_dtype(out[col]):
+            out[col] = out[col].round(DECIMALS)
+    return out
+
+
 def average_min_max_excluded(values: np.ndarray) -> float:
     """Mean after dropping one minimum and one maximum (needs >= 3 samples)."""
     arr = np.asarray(values, dtype=float)
     if arr.size <= 2:
-        return float(np.mean(arr))
+        return round2(np.mean(arr))
     sorted_vals = np.sort(arr)
-    return float(np.mean(sorted_vals[1:-1]))
+    return round2(np.mean(sorted_vals[1:-1]))
 
 
 def summarize_group(g: pd.DataFrame, metric: str) -> dict:
     vals = g[metric].to_numpy(dtype=float)
     return {
         "n_runs": len(vals),
-        "mean": float(np.mean(vals)),
-        "std": float(np.std(vals, ddof=1)) if len(vals) > 1 else 0.0,
-        "sem": float(stats.sem(vals)) if len(vals) > 1 else 0.0,
-        "min": float(np.min(vals)),
-        "max": float(np.max(vals)),
-        "range": float(np.max(vals) - np.min(vals)),
-        "average_min_max_excluded": average_min_max_excluded(vals),
-        "p25": float(np.percentile(vals, 25)),
-        "p50": float(np.percentile(vals, 50)),
-        "p75": float(np.percentile(vals, 75)),
-        "p95": float(np.percentile(vals, 95)),
-        "p99": float(np.percentile(vals, 99)),
-        "cv_pct": float(100.0 * np.std(vals, ddof=1) / np.mean(vals))
+        "mean": round2(np.mean(vals)),
+        "std": round2(np.std(vals, ddof=1)) if len(vals) > 1 else 0.0,
+        "sem": round2(stats.sem(vals)) if len(vals) > 1 else 0.0,
+        "min": round2(np.min(vals)),
+        "max": round2(np.max(vals)),
+        "range": round2(np.max(vals) - np.min(vals)),
+        "average_min_max_excluded": round2(average_min_max_excluded(vals)),
+        "p25": round2(np.percentile(vals, 25)),
+        "p50": round2(np.percentile(vals, 50)),
+        "p75": round2(np.percentile(vals, 75)),
+        "p95": round2(np.percentile(vals, 95)),
+        "p99": round2(np.percentile(vals, 99)),
+        "variation_of_run": round2(100.0 * np.std(vals, ddof=1) / np.mean(vals))
         if len(vals) > 1 and np.mean(vals) != 0
         else 0.0,
     }
@@ -381,53 +423,74 @@ def plot_aggregated(df: pd.DataFrame, out_root: Path, exclude_min_max: bool) -> 
 
 
 def write_raw_csv(df: pd.DataFrame, path: Path) -> None:
-    cols = [
-        "run_id",
-        "model_name",
-        "model_key",
-        "strategy",
-        "config",
-        "workload",
-        "batch_size",
-        "output_tokens",
-        "duration_s",
-        "throughput_tok_s",
-        "mj_per_token",
-        "gpu_avg_power_w",
-        "source_file",
-    ]
-    df[cols].sort_values(
-        ["model_key", "workload", "config", "run_id"]
+    out = df[
+        [
+            "run_id",
+            "model_name",
+            "config",
+            "workload",
+            "duration_s",
+            "throughput_tok_s",
+            "mj_per_token",
+            "gpu_avg_power_w",
+            "source_file",
+        ]
+    ].rename(columns=METRIC_COLUMNS)
+    round_dataframe_floats(
+        out.sort_values(["model_name", "workload", "config", "run_id"])
     ).to_csv(path, index=False, quoting=csv.QUOTE_MINIMAL)
 
 
 def write_summary_csv(df: pd.DataFrame, path: Path) -> None:
     rows: list[dict] = []
-    group_cols = ["model_name", "model_key", "workload", "batch_size", "output_tokens", "config", "strategy"]
+    group_cols = ["model_name", "workload", "config"]
     for keys, g in df.groupby(group_cols, sort=False):
-        base = dict(zip(group_cols, keys))
-        for metric_key, metric_label, _ in METRICS:
-            s = summarize_group(g, metric_key)
-            rows.append(
-                {
-                    **base,
-                    "metric": metric_key,
-                    "metric_label": metric_label,
-                    **s,
-                }
-            )
-    pd.DataFrame(rows).sort_values(
-        ["model_key", "workload", "config", "metric"]
+        row = dict(zip(group_cols, keys))
+        for metric_key, col_name in METRIC_COLUMNS.items():
+            row[col_name] = round2(g[metric_key].mean())
+        rows.append(row)
+    round_dataframe_floats(
+        pd.DataFrame(rows).sort_values(["model_name", "workload", "config"])
     ).to_csv(path, index=False)
+
+
+def pivot_metrics_wide(
+    long_rows: list[dict],
+    key_cols: list[str],
+    metric_fields: dict[str, str],
+    shared_cols: list[str] | None = None,
+) -> pd.DataFrame:
+    """Pivot long metric rows to wide columns like duration_f, throughput_eta."""
+    grouped: dict[tuple, dict] = {}
+    for row in long_rows:
+        key = tuple(row[col] for col in key_cols)
+        if key not in grouped:
+            grouped[key] = {col: row[col] for col in key_cols}
+            for col in shared_cols or []:
+                grouped[key][col] = row[col]
+        metric = row["metric"]
+        for src, suffix in metric_fields.items():
+            if src in row:
+                grouped[key][f"{metric}_{suffix}"] = row[src]
+    if not grouped:
+        return pd.DataFrame()
+    out = pd.DataFrame(grouped.values())
+    metric_cols: list[str] = []
+    for metric in METRIC_COLUMN_ORDER:
+        for suffix in metric_fields.values():
+            col = f"{metric}_{suffix}"
+            if col in out.columns:
+                metric_cols.append(col)
+    shared = [c for c in (shared_cols or []) if c in out.columns]
+    return out[key_cols + shared + metric_cols]
 
 
 def write_min_max_spread_csv(df: pd.DataFrame, path: Path) -> None:
     rows: list[dict] = []
-    metrics_of_interest = ["throughput_tok_s", "mj_per_token", "duration_s"]
-    group_cols = ["model_name", "model_key", "workload", "config", "strategy"]
+    group_cols = ["model_name", "workload", "config"]
     for keys, g in df.groupby(group_cols, sort=False):
         base = dict(zip(group_cols, keys))
-        for metric in metrics_of_interest:
+        for metric in METRIC_KEYS:
             vals = g[metric].to_numpy(dtype=float)
             mean_v = float(np.mean(vals))
             min_v = float(np.min(vals))
@@ -437,18 +500,31 @@ def write_min_max_spread_csv(df: pd.DataFrame, path: Path) -> None:
             rows.append(
                 {
                     **base,
-                    "metric": metric,
+                    "metric": METRIC_COLUMNS[metric],
                     "mean": mean_v,
                     "min": min_v,
                     "max": max_v,
                     "spread_abs": spread_abs,
-                    "spread_pct_of_mean": spread_pct,
+                    "spread_pct": spread_pct,
                     "min_run_id": int(g.loc[g[metric].idxmin(), "run_id"]),
                     "max_run_id": int(g.loc[g[metric].idxmax(), "run_id"]),
                 }
             )
-    pd.DataFrame(rows).sort_values(
-        ["model_key", "workload", "config", "metric"]
+    wide = pivot_metrics_wide(
+        rows,
+        key_cols=group_cols,
+        metric_fields={
+            "mean": "mean",
+            "min": "min",
+            "max": "max",
+            "spread_abs": "spread_abs",
+            "spread_pct": "spread_pct",
+            "min_run_id": "min_run_id",
+            "max_run_id": "max_run_id",
+        },
+    )
+    round_dataframe_floats(
+        wide.sort_values(group_cols)
     ).to_csv(path, index=False)
 
 
@@ -550,19 +626,15 @@ def write_anova_csv(df: pd.DataFrame, path: Path) -> None:
     for (model_key, workload), g in df.groupby(["model_key", "workload"]):
         if g["config"].nunique() < 2:
             continue
-        for metric_key, metric_label, _ in METRICS:
+        for metric_key, _, _ in METRICS:
             groups = [grp[metric_key].to_numpy() for _, grp in g.groupby("config")]
             res = one_way_anova(groups)
             rows.append(
                 {
-                    "test": "one_way_config",
-                    "factor_tested": "config",
-                    "model_key": model_key,
                     "model_name": MODELS[model_key],
                     "workload": workload,
-                    "config": "(all configs)",
-                    "metric": metric_key,
-                    "metric_label": metric_label,
+                    "config": "",
+                    "metric": METRIC_COLUMNS[metric_key],
                     "n_groups": g["config"].nunique(),
                     "n_observations": len(g),
                     **res,
@@ -573,68 +645,103 @@ def write_anova_csv(df: pd.DataFrame, path: Path) -> None:
     for (model_key, config), g in df.groupby(["model_key", "config"]):
         if g["workload"].nunique() < 2:
             continue
-        for metric_key, metric_label, _ in METRICS:
+        for metric_key, _, _ in METRICS:
             groups = [grp[metric_key].to_numpy() for _, grp in g.groupby("workload")]
             res = one_way_anova(groups)
             rows.append(
                 {
-                    "test": "one_way_workload",
-                    "factor_tested": "workload",
-                    "model_key": model_key,
                     "model_name": MODELS[model_key],
-                    "workload": "(all workloads)",
+                    "workload": "",
                     "config": config,
-                    "metric": metric_key,
-                    "metric_label": metric_label,
+                    "metric": METRIC_COLUMNS[metric_key],
                     "n_groups": g["workload"].nunique(),
                     "n_observations": len(g),
                     **res,
                 }
             )
 
-    out = pd.DataFrame(rows)
-    out.sort_values(
-        ["model_key", "test", "workload", "config", "metric"],
-        inplace=True,
+    out = pivot_metrics_wide(
+        rows,
+        key_cols=["model_name", "workload", "config"],
+        metric_fields={
+            "f_statistic": "f",
+            "p_value": "p",
+            "eta_squared": "eta",
+        },
+        shared_cols=["n_groups", "n_observations"],
     )
-    out.to_csv(path, index=False)
+    out.sort_values(["model_name", "workload", "config"], inplace=True)
+    round_dataframe_floats(out).to_csv(path, index=False)
 
 
-def write_factorial_csv(df: pd.DataFrame, path: Path) -> None:
-    rows: list[dict] = []
+def write_factorial_csv(df: pd.DataFrame, path: Path, model_path: Path) -> None:
+    two_way_rows: list[dict] = []
     for model_key, g in df.groupby("model_key"):
-        for metric_key, metric_label, _ in METRICS:
+        for metric_key, _, _ in METRICS:
             res = two_way_anova(g, "config", "workload", metric_key)
-            if res:
-                rows.append(
-                    {
-                        "model_key": model_key,
-                        "metric": metric_key,
-                        "metric_label": metric_label,
-                        **res,
-                    }
-                )
-
-    # Cross-model comparison: model × workload (collapse configs to run-level means per config first
-    # would lose detail; instead test model effect within each config×workload cell)
-    for (config, workload), g in df.groupby(["config", "workload"]):
-        if g["model_key"].nunique() < 2:
-            continue
-        for metric_key, metric_label, _ in METRICS:
-            groups = [grp[metric_key].to_numpy() for _, grp in g.groupby("model_key")]
-            res = one_way_anova(groups)
-            rows.append(
+            if not res:
+                continue
+            res = {
+                k: v
+                for k, v in res.items()
+                if k not in {"metric", "factor_a", "factor_b"}
+            }
+            two_way_rows.append(
                 {
-                    "test": "one_way_model",
-                    "config": config,
-                    "workload": workload,
-                    "metric": metric_key,
-                    "metric_label": metric_label,
+                    "model_name": MODELS[model_key],
+                    "factor_a": "config",
+                    "factor_b": "workload",
+                    "metric": METRIC_COLUMNS[metric_key],
                     **res,
                 }
             )
 
-    pd.DataFrame(rows).to_csv(path, index=False)
+    two_way_wide = pivot_metrics_wide(
+        two_way_rows,
+        key_cols=["model_name", "factor_a", "factor_b"],
+        metric_fields={
+            "f_a": "f_a",
+            "p_a": "p_a",
+            "f_b": "f_b",
+            "p_b": "p_b",
+            "f_interaction": "f_interaction",
+            "p_interaction": "p_interaction",
+            "eta_squared_a": "eta_a",
+            "eta_squared_b": "eta_b",
+            "eta_squared_interaction": "eta_interaction",
+        },
+        shared_cols=["n"],
+    )
+    two_way_wide.sort_values(["model_name"], inplace=True)
+    round_dataframe_floats(two_way_wide).to_csv(path, index=False)
+
+    model_rows: list[dict] = []
+    for (config, workload), g in df.groupby(["config", "workload"]):
+        if g["model_key"].nunique() < 2:
+            continue
+        for metric_key, _, _ in METRICS:
+            groups = [grp[metric_key].to_numpy() for _, grp in g.groupby("model_key")]
+            res = one_way_anova(groups)
+            model_rows.append(
+                {
+                    "config": config,
+                    "workload": workload,
+                    "metric": METRIC_COLUMNS[metric_key],
+                    **res,
+                }
+            )
+
+    model_wide = pivot_metrics_wide(
+        model_rows,
+        key_cols=["config", "workload"],
+        metric_fields={
+            "f_statistic": "f",
+            "p_value": "p",
+            "eta_squared": "eta",
+        },
+    )
+    model_wide.sort_values(["config", "workload"], inplace=True)
+    round_dataframe_floats(model_wide).to_csv(model_path, index=False)
 
 
 def write_report_md(df: pd.DataFrame, out_root: Path, paths: dict[str, Path]) -> None:
@@ -651,10 +758,11 @@ def write_report_md(df: pd.DataFrame, out_root: Path, paths: dict[str, Path]) ->
         "| File | Description |",
         "|------|-------------|",
         f"| `{paths['raw'].name}` | All per-run measurements |",
-        f"| `{paths['summary'].name}` | Mean, std, percentiles, average min max excluded per config |",
-        f"| `{paths['spread'].name}` | Min/max spread for throughput, energy, duration |",
-        f"| `{paths['anova'].name}` | One-way ANOVA |",
-        f"| `{paths['factorial'].name}` | Two-way config×workload ANOVA per model |",
+        f"| `{paths['summary'].name}` | One row per config with average duration, throughput, mj_per_token, gpu_avg_power |",
+        f"| `{paths['spread'].name}` | Min/max spread per config (metrics as columns) |",
+        f"| `{paths['anova'].name}` | One-way ANOVA (metrics as columns) |",
+        f"| `{paths['factorial'].name}` | Two-way config×workload ANOVA per model (metrics as columns) |",
+        f"| `{paths['model_anova'].name}` | Model comparison ANOVA per config×workload (metrics as columns) |",
         "",
         "## Plots",
         "",
@@ -665,9 +773,7 @@ def write_report_md(df: pd.DataFrame, out_root: Path, paths: dict[str, Path]) ->
         "## Statistics notes",
         "",
         "- **Average min max excluded**: for 10 runs, drops the single lowest and highest value before averaging.",
-        "- **One-way ANOVA (config)**: tests whether parallel strategy affects each metric within a model×workload (`factor_tested=config`, workload fixed).",
-        "- **One-way ANOVA (workload)**: tests whether workload affects each metric within a model×config (`factor_tested=workload`, config fixed).",
-        "- Rows use `(all configs)` or `(all workloads)` when that factor is the one being compared.",
+        "- **One-way ANOVA**: compares configs (workload fixed, config blank) or workloads (config fixed, workload blank) per metric.",
         "- **Two-way ANOVA**: config × workload interaction per model; η² reports effect size.",
         "- **p99 / p95**: run-to-run percentiles from repeated benchmark executions, not request latency.",
         "",
@@ -707,13 +813,14 @@ def main() -> None:
         "spread": csv_dir / "min_max_spread.csv",
         "anova": csv_dir / "anova_results.csv",
         "factorial": csv_dir / "factorial_anova.csv",
+        "model_anova": csv_dir / "model_anova.csv",
     }
 
     write_raw_csv(df, paths["raw"])
     write_summary_csv(df, paths["summary"])
     write_min_max_spread_csv(df, paths["spread"])
     write_anova_csv(df, paths["anova"])
-    write_factorial_csv(df, paths["factorial"])
+    write_factorial_csv(df, paths["factorial"], paths["model_anova"])
     write_report_md(df, out_root, paths)
 
     print("Generating per-run plots …")
