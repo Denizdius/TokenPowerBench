@@ -23,3 +23,8 @@ tokenbench_qwen3.5_27b/
 # vLLM run logs
 vllm_run_single_node.txt
 vllm_run_single_node_ts.txt
+
+# macOS / local caches
+.DS_Store
+**/.DS_Store
+.matplotlib/

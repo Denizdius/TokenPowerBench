@@ -15,12 +15,16 @@
 | `anova_results.csv` | One-way ANOVA (metrics as columns) |
 | `factorial_anova.csv` | Two-way config×workload ANOVA per model (metrics as columns) |
 | `model_anova.csv` | Model comparison ANOVA per config×workload (metrics as columns) |
+| `eager_vs_noeager_absolute.csv` | Eager vs no-eager (min/max excluded): values and absolute diff |
+| `eager_vs_noeager_percent.csv` | Eager vs no-eager percent diff (↑ higher, ↓ lower) |
 
 ## Plots
 
 - `plots/per_run/run_<N>/<model>/<workload>/` — single-run bar charts
 - `plots/aggregated/mean/` — mean ± SEM across runs
 - `plots/aggregated/avg_min_max_excluded/` — average with min/max run excluded
+- `plots/eager_vs_noeager/values/` — eager vs no-eager side-by-side (min/max excluded)
+- `plots/eager_vs_noeager/percent_diff/` — percent change with ↑/↓ labels
 
 ## Statistics notes
 

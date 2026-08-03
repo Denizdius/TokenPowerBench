@@ -56,6 +56,11 @@ MODELS = {
     "qwen3.5_27b": "Qwen3.5-27B",
 }
 
+# (model_key, config) pairs omitted from analysis outputs
+EXCLUDED_CONFIGS: set[tuple[str, str]] = {
+    ("qwen3.5_27b", "Single GPU"),
+}
+
 CONFIG_ORDER = [
     "Single GPU",
     "TP2",
@@ -86,7 +91,7 @@ METRIC_COLUMNS = {
 METRIC_COLUMN_ORDER = [METRIC_COLUMNS[k] for k in METRIC_KEYS]
 
 JSON_NAME_RE = re.compile(
-    r"^(qwen3(?:\.5_27b|_14b))_(.+)_bs(\d+)_out(\d+)_(\d{8}_\d{6})\.json$"
+    r"^(qwen3(?:\.5_27b|_14b))_(.+)_bs(\d+)_out(\d+)(?:_noeager)?_(\d{8}_\d{6})\.json$"
 )
 
 
@@ -190,6 +195,18 @@ def load_all_records(data_root: Path) -> pd.DataFrame:
     if not rows:
         raise FileNotFoundError(f"No JSON results under {data_root}/run_*/jsons/")
     return pd.DataFrame(rows)
+
+
+def apply_config_exclusions(df: pd.DataFrame) -> pd.DataFrame:
+    if not EXCLUDED_CONFIGS:
+        return df
+    mask = pd.Series(True, index=df.index)
+    for model_key, config in EXCLUDED_CONFIGS:
+        mask &= ~((df["model_key"] == model_key) & (df["config"] == config))
+    excluded = int((~mask).sum())
+    if excluded:
+        print(f"Excluded {excluded} records from excluded configs")
+    return df.loc[mask].copy()
 
 
 def round2(value: float) -> float:
@@ -452,6 +469,274 @@ def write_summary_csv(df: pd.DataFrame, path: Path) -> None:
     round_dataframe_floats(
         pd.DataFrame(rows).sort_values(["model_name", "workload", "config"])
     ).to_csv(path, index=False)
+
+
+def build_min_max_excluded_summary(df: pd.DataFrame) -> pd.DataFrame:
+    rows: list[dict] = []
+    group_cols = ["model_name", "workload", "config"]
+    for keys, g in df.groupby(group_cols, sort=False):
+        row = dict(zip(group_cols, keys))
+        for metric_key, col_name in METRIC_COLUMNS.items():
+            row[col_name] = average_min_max_excluded(g[metric_key].to_numpy(dtype=float))
+        rows.append(row)
+    return round_dataframe_floats(
+        pd.DataFrame(rows).sort_values(["model_name", "workload", "config"])
+    )
+
+
+def write_summary_min_max_excluded_csv(df: pd.DataFrame, path: Path) -> None:
+    build_min_max_excluded_summary(df).to_csv(path, index=False)
+
+
+def format_pct_diff(eager_val: float, noeager_val: float) -> str:
+    if eager_val == 0:
+        return "—"
+    pct = 100.0 * (noeager_val - eager_val) / eager_val
+    if pct > 0:
+        arrow = "↑"
+    elif pct < 0:
+        arrow = "↓"
+    else:
+        arrow = "→"
+    return f"{arrow} {abs(round2(pct)):g}%"
+
+
+def write_eager_noeager_comparison_csvs(
+    eager_df: pd.DataFrame,
+    noeager_df: pd.DataFrame,
+    absolute_path: Path,
+    percent_path: Path,
+) -> None:
+    eager_sum = build_min_max_excluded_summary(eager_df)
+    noeager_sum = build_min_max_excluded_summary(noeager_df)
+    key_cols = ["model_name", "workload", "config"]
+    merged = eager_sum.merge(
+        noeager_sum,
+        on=key_cols,
+        suffixes=("_eager", "_noeager"),
+        how="inner",
+    ).sort_values(key_cols)
+
+    absolute_rows: list[dict] = []
+    percent_rows: list[dict] = []
+    for _, row in merged.iterrows():
+        base = {col: row[col] for col in key_cols}
+        abs_row = dict(base)
+        pct_row = dict(base)
+        for col in METRIC_COLUMN_ORDER:
+            eager_val = float(row[f"{col}_eager"])
+            noeager_val = float(row[f"{col}_noeager"])
+            abs_row[f"{col}_eager"] = round2(eager_val)
+            abs_row[f"{col}_noeager"] = round2(noeager_val)
+            abs_row[f"{col}_diff"] = round2(noeager_val - eager_val)
+            pct_row[f"{col}_pct"] = format_pct_diff(eager_val, noeager_val)
+        absolute_rows.append(abs_row)
+        percent_rows.append(pct_row)
+
+    pd.DataFrame(absolute_rows).to_csv(absolute_path, index=False)
+    pd.DataFrame(percent_rows).to_csv(percent_path, index=False)
+
+
+def _merged_eager_noeager_summary(
+    eager_df: pd.DataFrame, noeager_df: pd.DataFrame
+) -> pd.DataFrame:
+    eager_sum = build_min_max_excluded_summary(eager_df)
+    noeager_sum = build_min_max_excluded_summary(noeager_df)
+    return eager_sum.merge(
+        noeager_sum,
+        on=["model_name", "workload", "config"],
+        suffixes=("_eager", "_noeager"),
+        how="inner",
+    )
+
+
+def plot_eager_noeager_grouped(
+    *,
+    configs: list[str],
+    eager_vals: list[float],
+    noeager_vals: list[float],
+    title: str,
+    ylabel: str,
+    out_path: Path,
+) -> None:
+    x = np.arange(len(configs))
+    width = 0.36
+    fig, ax = plt.subplots(figsize=(max(8, len(configs) * 0.95), 5))
+    ax.bar(
+        x - width / 2,
+        eager_vals,
+        width,
+        label="Eager",
+        color="#4C72B0",
+        edgecolor="white",
+        linewidth=0.6,
+    )
+    ax.bar(
+        x + width / 2,
+        noeager_vals,
+        width,
+        label="No-eager",
+        color="#DD8452",
+        edgecolor="white",
+        linewidth=0.6,
+    )
+    ax.set_title(title, fontsize=12, fontweight="bold")
+    ax.set_ylabel(ylabel)
+    ax.set_xticks(x)
+    ax.set_xticklabels(configs, rotation=35, ha="right")
+    ax.legend()
+    ax.grid(axis="y", linestyle="--", alpha=0.35)
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=160, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_eager_noeager_pct_diff(
+    *,
+    configs: list[str],
+    pct_vals: list[float],
+    title: str,
+    ylabel: str,
+    out_path: Path,
+) -> None:
+    x = np.arange(len(configs))
+    colors = ["#55A868" if p >= 0 else "#C44E52" for p in pct_vals]
+    fig, ax = plt.subplots(figsize=(max(8, len(configs) * 0.95), 5))
+    bars = ax.bar(x, pct_vals, color=colors, edgecolor="white", linewidth=0.6, alpha=0.92)
+    ax.axhline(0, color="black", linewidth=0.8)
+    ax.set_title(title, fontsize=12, fontweight="bold")
+    ax.set_ylabel(ylabel)
+    ax.set_xticks(x)
+    ax.set_xticklabels(configs, rotation=35, ha="right")
+    ax.grid(axis="y", linestyle="--", alpha=0.35)
+    for bar, pct in zip(bars, pct_vals):
+        arrow = "↑" if pct > 0 else "↓" if pct < 0 else "→"
+        label = f"{arrow} {abs(pct):.1f}%"
+        y = bar.get_height()
+        va = "bottom" if pct >= 0 else "top"
+        offset = 3 if pct >= 0 else -3
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            y + offset,
+            label,
+            ha="center",
+            va=va,
+            fontsize=7,
+        )
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=160, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_eager_noeager_comparison(
+    eager_df: pd.DataFrame, noeager_df: pd.DataFrame, out_root: Path
+) -> None:
+    merged = _merged_eager_noeager_summary(eager_df, noeager_df)
+    values_root = out_root / "plots" / "eager_vs_noeager" / "values"
+    pct_root = out_root / "plots" / "eager_vs_noeager" / "percent_diff"
+
+    for model_key, model_name in MODELS.items():
+        model_merged = merged[merged["model_name"] == model_name]
+        for slug, batch_size, output_tokens, title in SCENARIOS:
+            workload = workload_slug(batch_size, output_tokens)
+            subset = model_merged[model_merged["workload"] == workload]
+            if subset.empty:
+                continue
+            configs = sort_configs(subset["config"].tolist())
+            subset = subset.set_index("config").loc[configs].reset_index()
+
+            value_metrics: dict[str, list[float]] = {}
+            pct_metrics: dict[str, list[float]] = {}
+            for metric_key, ylabel, color in METRICS:
+                col = METRIC_COLUMNS[metric_key]
+                eager_vals = subset[f"{col}_eager"].astype(float).tolist()
+                noeager_vals = subset[f"{col}_noeager"].astype(float).tolist()
+                pct_vals = [
+                    100.0 * (n - e) / e if e else 0.0
+                    for e, n in zip(eager_vals, noeager_vals)
+                ]
+                value_metrics[metric_key] = (eager_vals, noeager_vals)
+                pct_metrics[metric_key] = pct_vals
+
+                plot_eager_noeager_grouped(
+                    configs=configs,
+                    eager_vals=eager_vals,
+                    noeager_vals=noeager_vals,
+                    title=f"{model_name} — {title} — eager vs no-eager",
+                    ylabel=ylabel,
+                    out_path=values_root / model_key / slug / f"{metric_key}.png",
+                )
+                plot_eager_noeager_pct_diff(
+                    configs=configs,
+                    pct_vals=pct_vals,
+                    title=f"{model_name} — {title} — {ylabel} change (no-eager vs eager)",
+                    ylabel="Change (%)",
+                    out_path=pct_root / model_key / slug / f"{metric_key}.png",
+                )
+
+            # 2×2 grid: grouped values
+            fig, axes = plt.subplots(2, 2, figsize=(14, 9))
+            fig.suptitle(
+                f"{model_name} — {title} — eager vs no-eager (min/max excluded)",
+                fontsize=14,
+                fontweight="bold",
+            )
+            x = np.arange(len(configs))
+            width = 0.36
+            for ax, (metric_key, ylabel, color) in zip(axes.flat, METRICS):
+                eager_vals, noeager_vals = value_metrics[metric_key]
+                ax.bar(x - width / 2, eager_vals, width, label="Eager", color="#4C72B0")
+                ax.bar(x + width / 2, noeager_vals, width, label="No-eager", color="#DD8452")
+                ax.set_title(ylabel, fontsize=11)
+                ax.set_ylabel(ylabel.split(" (")[0])
+                ax.set_xticks(x)
+                ax.set_xticklabels(configs, rotation=35, ha="right")
+                ax.grid(axis="y", linestyle="--", alpha=0.35)
+            handles, labels = axes[0, 0].get_legend_handles_labels()
+            fig.legend(handles, labels, loc="upper right")
+            fig.tight_layout(rect=[0, 0, 1, 0.96])
+            grid_path = values_root / model_key / slug / "all_metrics.png"
+            grid_path.parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(grid_path, dpi=160, bbox_inches="tight")
+            plt.close(fig)
+
+            # 2×2 grid: percent diff
+            fig, axes = plt.subplots(2, 2, figsize=(14, 9))
+            fig.suptitle(
+                f"{model_name} — {title} — % change no-eager vs eager",
+                fontsize=14,
+                fontweight="bold",
+            )
+            for ax, (metric_key, ylabel, _) in zip(axes.flat, METRICS):
+                pct_vals = pct_metrics[metric_key]
+                colors = ["#55A868" if p >= 0 else "#C44E52" for p in pct_vals]
+                bars = ax.bar(x, pct_vals, color=colors, edgecolor="white", linewidth=0.6)
+                ax.axhline(0, color="black", linewidth=0.8)
+                ax.set_title(ylabel, fontsize=11)
+                ax.set_ylabel("Change (%)")
+                ax.set_xticks(x)
+                ax.set_xticklabels(configs, rotation=35, ha="right")
+                ax.grid(axis="y", linestyle="--", alpha=0.35)
+                for bar, pct in zip(bars, pct_vals):
+                    arrow = "↑" if pct > 0 else "↓" if pct < 0 else "→"
+                    y = bar.get_height()
+                    va = "bottom" if pct >= 0 else "top"
+                    offset = 3 if pct >= 0 else -3
+                    ax.text(
+                        bar.get_x() + bar.get_width() / 2,
+                        y + offset,
+                        f"{arrow} {abs(pct):.1f}%",
+                        ha="center",
+                        va=va,
+                        fontsize=7,
+                    )
+            fig.tight_layout(rect=[0, 0, 1, 0.96])
+            pct_grid_path = pct_root / model_key / slug / "all_metrics.png"
+            pct_grid_path.parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(pct_grid_path, dpi=160, bbox_inches="tight")
+            plt.close(fig)
 
 
 def pivot_metrics_wide(
@@ -759,6 +1044,7 @@ def write_report_md(df: pd.DataFrame, out_root: Path, paths: dict[str, Path]) ->
         "|------|-------------|",
         f"| `{paths['raw'].name}` | All per-run measurements |",
         f"| `{paths['summary'].name}` | One row per config with average duration, throughput, mj_per_token, gpu_avg_power |",
+        f"| `{paths['summary_min_max_excluded'].name}` | Same as summary but average min/max run excluded |",
         f"| `{paths['spread'].name}` | Min/max spread per config (metrics as columns) |",
         f"| `{paths['anova'].name}` | One-way ANOVA (metrics as columns) |",
         f"| `{paths['factorial'].name}` | Two-way config×workload ANOVA per model (metrics as columns) |",
@@ -769,6 +1055,8 @@ def write_report_md(df: pd.DataFrame, out_root: Path, paths: dict[str, Path]) ->
         "- `plots/per_run/run_<N>/<model>/<workload>/` — single-run bar charts",
         "- `plots/aggregated/mean/` — mean ± SEM across runs",
         "- `plots/aggregated/avg_min_max_excluded/` — average with min/max run excluded",
+        "- `plots/eager_vs_noeager/values/` — eager vs no-eager side-by-side (min/max excluded)",
+        "- `plots/eager_vs_noeager/percent_diff/` — percent change with ↑/↓ labels",
         "",
         "## Statistics notes",
         "",
@@ -795,6 +1083,17 @@ def main() -> None:
         default=None,
         help="Analysis output directory (default: <data-root>/analysis)",
     )
+    parser.add_argument(
+        "--compare-eager-root",
+        type=Path,
+        default=None,
+        help="Optional eager multi-run root; writes eager vs no-eager comparison CSVs",
+    )
+    parser.add_argument(
+        "--skip-plots",
+        action="store_true",
+        help="Skip plot generation (CSV/report only)",
+    )
     args = parser.parse_args()
 
     data_root = args.data_root.resolve()
@@ -802,7 +1101,7 @@ def main() -> None:
     out_root.mkdir(parents=True, exist_ok=True)
 
     print(f"Loading results from {data_root} …")
-    df = load_all_records(data_root)
+    df = apply_config_exclusions(load_all_records(data_root))
     print(f"Loaded {len(df)} records across {df['run_id'].nunique()} runs")
 
     csv_dir = out_root / "csv"
@@ -810,6 +1109,7 @@ def main() -> None:
     paths = {
         "raw": csv_dir / "raw_measurements.csv",
         "summary": csv_dir / "summary_by_config.csv",
+        "summary_min_max_excluded": csv_dir / "summary_min_max_excluded.csv",
         "spread": csv_dir / "min_max_spread.csv",
         "anova": csv_dir / "anova_results.csv",
         "factorial": csv_dir / "factorial_anova.csv",
@@ -818,17 +1118,59 @@ def main() -> None:
 
     write_raw_csv(df, paths["raw"])
     write_summary_csv(df, paths["summary"])
+    write_summary_min_max_excluded_csv(df, paths["summary_min_max_excluded"])
     write_min_max_spread_csv(df, paths["spread"])
     write_anova_csv(df, paths["anova"])
     write_factorial_csv(df, paths["factorial"], paths["model_anova"])
     write_report_md(df, out_root, paths)
 
-    print("Generating per-run plots …")
-    plot_per_run(df, out_root)
-    print("Generating aggregated mean plots …")
-    plot_aggregated(df, out_root, exclude_min_max=False)
-    print("Generating aggregated average min max excluded plots …")
-    plot_aggregated(df, out_root, exclude_min_max=True)
+    if args.compare_eager_root:
+        eager_root = args.compare_eager_root.resolve()
+        print(f"Loading eager results from {eager_root} for comparison …")
+        eager_df = apply_config_exclusions(load_all_records(eager_root))
+        comparison_paths = {
+            "absolute": csv_dir / "eager_vs_noeager_absolute.csv",
+            "percent": csv_dir / "eager_vs_noeager_percent.csv",
+        }
+        write_eager_noeager_comparison_csvs(
+            eager_df,
+            df,
+            comparison_paths["absolute"],
+            comparison_paths["percent"],
+        )
+        print(f"Wrote comparison CSVs: {comparison_paths['absolute'].name}, {comparison_paths['percent'].name}")
+        print("Generating eager vs no-eager comparison plots …")
+        plot_eager_noeager_comparison(eager_df, df, out_root)
+        print(f"Comparison plots written to {out_root / 'plots' / 'eager_vs_noeager'}")
+        report_path = out_root / "REPORT.md"
+        if report_path.exists():
+            extra = (
+                f"| `{comparison_paths['absolute'].name}` | Eager vs no-eager (min/max excluded): values and absolute diff |",
+                f"| `{comparison_paths['percent'].name}` | Eager vs no-eager percent diff (↑ higher, ↓ lower) |",
+            )
+            text = report_path.read_text()
+            marker = f"| `{paths['model_anova'].name}` |"
+            if marker in text and comparison_paths["absolute"].name not in text:
+                text = text.replace(
+                    marker + " Model comparison ANOVA per config×workload (metrics as columns) |",
+                    marker + " Model comparison ANOVA per config×workload (metrics as columns) |",
+                    1,
+                )
+                insert_after = f"| `{paths['model_anova'].name}` | Model comparison ANOVA per config×workload (metrics as columns) |"
+                text = text.replace(
+                    insert_after,
+                    insert_after + "\n" + "\n".join(extra),
+                    1,
+                )
+                report_path.write_text(text)
+
+    if not args.skip_plots:
+        print("Generating per-run plots …")
+        plot_per_run(df, out_root)
+        print("Generating aggregated mean plots …")
+        plot_aggregated(df, out_root, exclude_min_max=False)
+        print("Generating aggregated average min max excluded plots …")
+        plot_aggregated(df, out_root, exclude_min_max=True)
 
     print(f"\nDone. Analysis written to {out_root}")
 
