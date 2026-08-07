@@ -114,7 +114,7 @@ def draw_frame_4gpu(ax, caption: str, group_labels: tuple[str, str] | None = Non
 
 def draw_weight(ax):
     rbox(ax, 0.45, 1.35, 15.3, 0.75, C_WEIGHT, C_WEIGHT_EDGE, lw=1.25, rs=0.09)
-    label(ax, 8.1, 1.72, "Weight Update", size=10)
+    label(ax, 8.1, 1.72, "Output Tokens", size=10)
 
 
 def draw_data(ax, x, y, w, h, text_s: str, dash: str | None = None):
@@ -204,9 +204,9 @@ def draw_tp_layer_box(
         label(ax, x + w / 2, y + h * 0.12, f"Layer {n}", size=size)
 
 
-def draw_comm(ax, x, y, w=1.2, h=0.58, size=6.4):
+def draw_comm(ax, x, y, w=1.2, h=0.58, size=7.0):
     rbox(ax, x, y, w, h, C_COMM, C_COMM_EDGE, lw=1.05, rs=0.06)
-    label(ax, x + w / 2, y + h / 2, "gpu-comm", size=size)
+    label(ax, x + w / 2, y + h / 2, "comm", size=size)
 
 
 def draw_tp_pp(ax):
@@ -219,7 +219,10 @@ def draw_tp_pp(ax):
     draw_weight(ax)
 
     # Shared data for stage 0 (TP shard of same microbatch)
-    draw_data(ax, 3.0, 9.55, 2.3, 0.62, "Data", dash="center")
+    # Ideal batch box size (same across all hybrid panels)
+    BW, BH = 2.3, 0.62
+
+    draw_data(ax, 3.0, 9.55, BW, BH, "Batch")
 
     # Stage 0: Layer 1 TP on GPU0|GPU1
     draw_tp_layer_box(ax, 1.15, 7.05, 2.05, 1.45, 1, solid="top", size=6.4)
@@ -232,23 +235,22 @@ def draw_tp_pp(ax):
     arrow(ax, 3.7, 9.55, 2.175, 8.55)
     arrow(ax, 4.6, 9.55, 6.125, 8.55)
 
-    # TP gpu-comm on stage-0
-    draw_comm(ax, 3.55, 7.45, w=1.05, h=0.55, size=5.8)
+    # TP comm on stage-0
+    draw_comm(ax, 3.55, 7.45, w=1.05, h=0.55, size=6.5)
     arrow(ax, 3.2, 7.72, 3.55, 7.72)
     arrow(ax, 4.6, 7.72, 5.1, 7.72)
 
-    # PP handoff
-    draw_comm(ax, 7.5, 5.25, w=1.2, h=0.55, size=5.8)
+    # PP handoff: Stage 0 (GPU1 Layer 1) -> Stage 1 (GPU2 Layer 2 only)
+    draw_comm(ax, 7.5, 5.25, w=1.2, h=0.55, size=6.5)
     arrow(ax, 6.125, 7.05, 8.1, 5.85)
     arrow(ax, 8.1, 5.25, 10.075, 7.05)
 
-    # TP gpu-comm on stage-1
-    draw_comm(ax, 11.45, 7.45, w=1.05, h=0.55, size=5.8)
+    # TP comm between GPU2 and GPU3 Tensor Layer 2
+    draw_comm(ax, 11.45, 7.45, w=1.05, h=0.55, size=6.5)
     arrow(ax, 11.1, 7.72, 11.45, 7.72)
     arrow(ax, 12.5, 7.72, 13.0, 7.72)
 
-    # Stage1 -> weight update
-    arrow(ax, 10.075, 7.05, 10.075, 2.15)
+    # Only GPU3 Tensor Layer 2 -> Weight Update
     arrow(ax, 14.025, 7.05, 14.025, 2.15)
 
 
@@ -261,8 +263,10 @@ def draw_tp_dp(ax):
     draw_frame_4gpu(ax, "(b) TP × DP", ("DP replica 0", "DP replica 1"))
     draw_weight(ax)
 
-    draw_data(ax, 2.05, 9.55, 2.25, 0.62, "Data 0", dash="left")
-    draw_data(ax, 9.95, 9.55, 2.25, 0.62, "Data 1", dash="right")
+    # Same batch box size as TP×PP; centered over each DP replica pair
+    BW, BH = 2.3, 0.62
+    draw_data(ax, 3.0, 9.55, BW, BH, "Batch 0")   # over GPU0|GPU1
+    draw_data(ax, 10.9, 9.55, BW, BH, "Batch 1")  # over GPU2|GPU3
 
     # Replica 0: TP on GPU0|GPU1
     draw_tp_layer_box(ax, 1.15, 7.25, 2.05, 1.25, 1, solid="top", size=6.2)
@@ -275,17 +279,17 @@ def draw_tp_dp(ax):
     draw_tp_layer_box(ax, 9.05, 5.05, 2.05, 1.25, 2, solid="top", size=6.2)
     draw_tp_layer_box(ax, 13.0, 5.05, 2.05, 1.25, 2, solid="bottom", size=6.2)
 
-    # Data -> L1
-    arrow(ax, 2.7, 9.55, 2.175, 8.55)
-    arrow(ax, 3.7, 9.55, 6.125, 8.55)
-    arrow(ax, 10.6, 9.55, 10.075, 8.55)
-    arrow(ax, 11.6, 9.55, 14.025, 8.55)
+    # Batch -> L1 (fan out from each batch box to that replica's TP ranks)
+    arrow(ax, 3.7, 9.55, 2.175, 8.55)
+    arrow(ax, 4.6, 9.55, 6.125, 8.55)
+    arrow(ax, 11.6, 9.55, 10.075, 8.55)
+    arrow(ax, 12.5, 9.55, 14.025, 8.55)
 
     # TP comm L1
-    draw_comm(ax, 3.55, 7.55, w=1.05, h=0.5, size=5.6)
+    draw_comm(ax, 3.55, 7.55, w=1.05, h=0.5, size=6.5)
     arrow(ax, 3.2, 7.8, 3.55, 7.8)
     arrow(ax, 4.6, 7.8, 5.1, 7.8)
-    draw_comm(ax, 11.45, 7.55, w=1.05, h=0.5, size=5.6)
+    draw_comm(ax, 11.45, 7.55, w=1.05, h=0.5, size=6.5)
     arrow(ax, 11.1, 7.8, 11.45, 7.8)
     arrow(ax, 12.5, 7.8, 13.0, 7.8)
 
@@ -296,17 +300,17 @@ def draw_tp_dp(ax):
     arrow(ax, 14.025, 7.25, 14.025, 6.35)
 
     # TP comm L2
-    draw_comm(ax, 3.55, 5.35, w=1.05, h=0.5, size=5.6)
+    draw_comm(ax, 3.55, 5.35, w=1.05, h=0.5, size=6.5)
     arrow(ax, 3.2, 5.6, 3.55, 5.6)
     arrow(ax, 4.6, 5.6, 5.1, 5.6)
-    draw_comm(ax, 11.45, 5.35, w=1.05, h=0.5, size=5.6)
+    draw_comm(ax, 11.45, 5.35, w=1.05, h=0.5, size=6.5)
     arrow(ax, 11.1, 5.6, 11.45, 5.6)
     arrow(ax, 12.5, 5.6, 13.0, 5.6)
 
-    # DP gpu-comm then weight update
-    draw_comm(ax, 3.55, 3.35, w=1.05, h=0.5, size=5.6)
-    draw_comm(ax, 11.45, 3.35, w=1.05, h=0.5, size=5.6)
-    draw_comm(ax, 7.5, 3.35, w=1.2, h=0.5, size=5.6)
+    # DP comm then weight update
+    draw_comm(ax, 3.55, 3.35, w=1.05, h=0.5, size=6.5)
+    draw_comm(ax, 11.45, 3.35, w=1.05, h=0.5, size=6.5)
+    draw_comm(ax, 7.5, 3.35, w=1.2, h=0.5, size=6.5)
     arrow(ax, 2.175, 5.05, 4.0, 3.9)
     arrow(ax, 6.125, 5.05, 4.2, 3.9)
     arrow(ax, 10.075, 5.05, 12.0, 3.9)
@@ -325,8 +329,10 @@ def draw_dp_pp(ax):
     draw_frame_4gpu(ax, "(c) DP × PP", ("DP replica 0", "DP replica 1"))
     draw_weight(ax)
 
-    draw_data(ax, 1.4, 9.55, 1.55, 0.62, "Data 0", dash="left")
-    draw_data(ax, 9.3, 9.55, 1.55, 0.62, "Data 1", dash="right")
+    # Same batch box size as TP×PP; centered over each replica's entry GPU
+    BW, BH = 2.3, 0.62
+    draw_data(ax, 1.025, 9.55, BW, BH, "Batch 0")  # over GPU0
+    draw_data(ax, 8.925, 9.55, BW, BH, "Batch 1")  # over GPU2
 
     # Replica 0: L1 on GPU0, L2 on GPU1 (no TP — full boxes)
     draw_layer(ax, 1.15, 6.7, 2.05, 1.55, 1)
@@ -340,19 +346,19 @@ def draw_dp_pp(ax):
     arrow(ax, 2.175, 9.55, 2.175, 8.3)
     arrow(ax, 10.075, 9.55, 10.075, 8.3)
 
-    # PP gpu-comm within each replica
-    draw_comm(ax, 3.55, 7.2, w=1.05, h=0.55, size=5.6)
+    # PP comm within each replica
+    draw_comm(ax, 3.55, 7.2, w=1.05, h=0.55, size=6.5)
     arrow(ax, 3.2, 7.48, 3.55, 7.48)
     arrow(ax, 4.6, 7.48, 5.1, 7.48)
 
-    draw_comm(ax, 11.45, 7.2, w=1.05, h=0.55, size=5.6)
+    draw_comm(ax, 11.45, 7.2, w=1.05, h=0.55, size=6.5)
     arrow(ax, 11.1, 7.48, 11.45, 7.48)
     arrow(ax, 12.5, 7.48, 13.0, 7.48)
 
-    # DP gpu-comm across replicas before weight update
-    draw_comm(ax, 3.55, 3.55, w=1.05, h=0.5, size=5.6)
-    draw_comm(ax, 11.45, 3.55, w=1.05, h=0.5, size=5.6)
-    draw_comm(ax, 7.5, 3.55, w=1.2, h=0.5, size=5.6)
+    # DP comm across replicas before weight update
+    draw_comm(ax, 3.55, 3.55, w=1.05, h=0.5, size=6.5)
+    draw_comm(ax, 11.45, 3.55, w=1.05, h=0.5, size=6.5)
+    draw_comm(ax, 7.5, 3.55, w=1.2, h=0.5, size=6.5)
 
     arrow(ax, 6.125, 6.7, 4.1, 4.1)
     arrow(ax, 14.025, 6.7, 12.0, 4.1)

@@ -99,7 +99,7 @@ def draw_frame(ax, caption: str):
 
 def draw_weight(ax):
     rbox(ax, 0.5, 1.4, 9.0, 0.8, C_WEIGHT, C_WEIGHT_EDGE, lw=1.3, rs=0.1)
-    label(ax, 5.0, 1.8, "Weight Update", size=10.5)
+    label(ax, 5.0, 1.8, "Output Tokens", size=10.5)
 
 
 def draw_data(ax, x, y, w, h, text_s: str, dash: str | None = None):
@@ -209,15 +209,15 @@ def draw_tp_layer_box(
 
 def draw_comm(ax, x, y, w=1.35, h=0.68):
     rbox(ax, x, y, w, h, C_COMM, C_COMM_EDGE, lw=1.15, rs=0.07)
-    label(ax, x + w / 2, y + h / 2, "gpu-comm", size=7.2)
+    label(ax, x + w / 2, y + h / 2, "comm", size=8.0)
 
 
 def draw_dp(ax):
     draw_frame(ax, "(a) Data Parallelism")
     draw_weight(ax)
 
-    draw_data(ax, 1.3, 9.55, 2.6, 0.72, "Data 0", dash="left")
-    draw_data(ax, 6.1, 9.55, 2.6, 0.72, "Data 1", dash="right")
+    draw_data(ax, 1.3, 9.55, 2.6, 0.72, "Batch 0")
+    draw_data(ax, 6.1, 9.55, 2.6, 0.72, "Batch 1")
 
     draw_layer(ax, 1.2, 7.2, 2.8, 1.45, 1)
     draw_layer(ax, 6.0, 7.2, 2.8, 1.45, 1)
@@ -240,8 +240,8 @@ def draw_tp(ax):
     draw_frame(ax, "(b) Tensor Parallelism")
     draw_weight(ax)
 
-    # Data straddling the divider
-    draw_data(ax, 3.25, 9.55, 3.5, 0.72, "Data", dash="center")
+    # Same batch box size as DP / PP panels; centered on the GPU divider
+    draw_data(ax, 3.7, 9.55, 2.6, 0.72, "Batch")
 
     # Per-GPU TP boxes: GPU0 solid-top / empty-bottom; GPU1 empty-top / solid-bottom
     draw_tp_layer_box(ax, 1.2, 7.15, 2.8, 1.55, 1, solid="top")
@@ -249,9 +249,9 @@ def draw_tp(ax):
     draw_tp_layer_box(ax, 1.2, 4.65, 2.8, 1.55, 2, solid="top")
     draw_tp_layer_box(ax, 6.0, 4.65, 2.8, 1.55, 2, solid="bottom")
 
-    # Data -> Layer 1
-    arrow(ax, 4.2, 9.55, 2.6, 8.75)
-    arrow(ax, 5.8, 9.55, 7.4, 8.75)
+    # Batch -> Layer 1
+    arrow(ax, 4.4, 9.55, 2.6, 8.75)
+    arrow(ax, 5.6, 9.55, 7.4, 8.75)
 
     # Inter-GPU gpu-comm at layer 1
     draw_comm(ax, 4.325, 7.58)
@@ -278,7 +278,7 @@ def draw_pp(ax):
     draw_frame(ax, "(c) Pipeline Parallelism")
     draw_weight(ax)
 
-    draw_data(ax, 1.3, 9.55, 2.6, 0.72, "Data")
+    draw_data(ax, 1.3, 9.55, 2.6, 0.72, "Batch")
 
     # Layer 1 on GPU0, Layer 2 on GPU1 (same height)
     draw_layer(ax, 1.2, 6.35, 2.8, 1.7, 1)
