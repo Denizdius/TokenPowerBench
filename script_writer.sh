@@ -4,7 +4,8 @@
 BASE_DIR="/gpfs/projects/etur83/my_volume/lm-evaluation-harness/TokenPowerBench"
 MODEL_14B="/gpfs/projects/etur83/my_volume/lm-evaluation-harness/Qwen3-14B"
 MODEL_27B="/gpfs/projects/etur83/my_volume/lm-evaluation-harness/Qwen3.5-27B"
-DATASET_PATH="${BASE_DIR}/alpaca.jsonl"
+ALPACA_PATH="${BASE_DIR}/alpaca.jsonl"
+LONGBENCH_PATH="${BASE_DIR}/longbench.jsonl"
 
 # 2. Define Workloads (Batch_Output)
 WORKLOADS=("128_500" "256_500" "256_2000")
@@ -19,7 +20,8 @@ SCRIPTS_DIR="benchmark_scripts"
 mkdir -p "$SCRIPTS_DIR"
 
 # 4. Generator Function
-# variant: "" (default), "noeager", or "noeager_ctx8192"
+# variant: "" | "noeager" | "noeager_ctx8192"
+#         | "eager_longbench_ctx8192" | "noeager_longbench_ctx8192"
 generate_scripts() {
     local model_name=$1
     local model_path=$2
@@ -51,6 +53,9 @@ generate_scripts() {
     local name_prefix=""
     local name_suffix=""
     local write_gpu_watch=0
+    local dataset="alpaca"
+    local dataset_path="$ALPACA_PATH"
+    local word_filter_block=""
     local run_body_after_max_len="  --monitor gpu_only \\"
     local run_tag="${model_name}_${strat}_bs${bs}_out${out}"
     local artifact_prefix="${run_tag}"
@@ -71,6 +76,31 @@ generate_scripts() {
         write_gpu_watch=1
         run_tag="${run_tag}_noeager_ctx8192"
         artifact_prefix="noeager_${model_name}_${strat}_bs${bs}_out${out}_ctx8192"
+    elif [ "$variant" == "eager_longbench_ctx8192" ]; then
+        gpu_util="0.90"
+        max_model_len=8192
+        eager_block="  --enforce-eager \\"
+        name_suffix="_longbench_ctx8192"
+        write_gpu_watch=1
+        dataset="longbench"
+        dataset_path="$LONGBENCH_PATH"
+        word_filter_block="  --min-words 1000 \\
+  --max-words 4000 \\"
+        run_tag="${run_tag}_longbench_ctx8192"
+        artifact_prefix="${model_name}_${strat}_bs${bs}_out${out}_longbench_ctx8192"
+    elif [ "$variant" == "noeager_longbench_ctx8192" ]; then
+        gpu_util="0.90"
+        max_model_len=8192
+        eager_block=""
+        name_prefix="noeager_"
+        name_suffix="_longbench_ctx8192"
+        write_gpu_watch=1
+        dataset="longbench"
+        dataset_path="$LONGBENCH_PATH"
+        word_filter_block="  --min-words 1000 \\
+  --max-words 4000 \\"
+        run_tag="${run_tag}_noeager_longbench_ctx8192"
+        artifact_prefix="noeager_${model_name}_${strat}_bs${bs}_out${out}_longbench_ctx8192"
     fi
 
     if [ -n "$eager_block" ]; then
@@ -100,8 +130,9 @@ cd "${BASE_DIR}" || exit
 
 python3 run_single_node.py \\
   --model "$model_path" \\
-  --dataset alpaca \\
-  --dataset-path "$DATASET_PATH" \\
+  --dataset $dataset \\
+  --dataset-path "$dataset_path" \\
+${word_filter_block}
   --batch-sizes $bs \\
   --num-samples 1024 \\
   --output-tokens $out \\
@@ -146,8 +177,9 @@ cd "${BASE_DIR}" || exit
 
 python3 run_single_node.py \\
   --model "$model_path" \\
-  --dataset alpaca \\
-  --dataset-path "$DATASET_PATH" \\
+  --dataset $dataset \\
+  --dataset-path "$dataset_path" \\
+${word_filter_block}
   --batch-sizes $bs \\
   --num-samples 1024 \\
   --output-tokens $out \\
@@ -206,6 +238,16 @@ for w in "${WORKLOADS[@]}"; do
     out=$(echo $w | cut -d'_' -f2)
     for s in "${STRATS_14B[@]}"; do
         generate_scripts "qwen3_14b" "$MODEL_14B" "$s" "$bs" "$out" "noeager_ctx8192"
+    done
+done
+
+# 9. LongBench ctx8192 for Qwen3-14B (eager + noeager; words 1000–4000)
+for w in "${WORKLOADS[@]}"; do
+    bs=$(echo $w | cut -d'_' -f1)
+    out=$(echo $w | cut -d'_' -f2)
+    for s in "${STRATS_14B[@]}"; do
+        generate_scripts "qwen3_14b" "$MODEL_14B" "$s" "$bs" "$out" "eager_longbench_ctx8192"
+        generate_scripts "qwen3_14b" "$MODEL_14B" "$s" "$bs" "$out" "noeager_longbench_ctx8192"
     done
 done
 
