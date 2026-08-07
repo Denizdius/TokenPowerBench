@@ -40,6 +40,31 @@ _METADATA_JSON = frozenset(
     {"dataset_dict.json", "dataset_info.json", "state.json"}
 )
 
+# Official THUDM/LongBench configs (main suite; not LongBench-E ``*_e``).
+LONGBENCH_SUBTASKS = (
+    "narrativeqa",
+    "qasper",
+    "multifieldqa_en",
+    "multifieldqa_zh",
+    "hotpotqa",
+    "2wikimqa",
+    "musique",
+    "dureader",
+    "gov_report",
+    "qmsum",
+    "multi_news",
+    "vcsum",
+    "trec",
+    "triviaqa",
+    "samsum",
+    "lsht",
+    "passage_count",
+    "passage_retrieval_en",
+    "passage_retrieval_zh",
+    "lcc",
+    "repobench-p",
+)
+
 
 class DatasetLoader:
     """
@@ -368,9 +393,17 @@ class DatasetLoader:
                     continue
                 prompts.append(f"{instr}\n\nContext: {ctx}" if ctx else instr)
             elif dataset == "longbench":
-                text = str(item.get("input", "")).strip()
-                if text:
-                    prompts.append(text)
+                # LongBench: ``input`` is the short question; ``context`` is the
+                # long document. Concatenate so offline/online runs actually
+                # stress long context (not just the query).
+                question = str(item.get("input", "")).strip()
+                context = str(item.get("context", "")).strip()
+                if context and question:
+                    prompts.append(f"{context}\n\n{question}")
+                elif context:
+                    prompts.append(context)
+                elif question:
+                    prompts.append(question)
             elif dataset == "humaneval":
                 p = str(item.get("prompt", "")).strip()
                 if p:
@@ -451,9 +484,7 @@ class DatasetLoader:
         if local_path:
             root = Path(local_path).expanduser().resolve()
             prompts: List[str] = []
-            subtasks = [
-                "narrativeqa", "qasper", "multifieldqa_en", "hotpotqa", "2wikimqa"
-            ]
+            subtasks = self._longbench_local_subtasks(root)
             for sub in subtasks:
                 sub_path = root / sub
                 if sub_path.is_dir():
@@ -475,9 +506,7 @@ class DatasetLoader:
             if not _HF_AVAILABLE:
                 return self._longbench_fallback()
             prompts = []
-            for sub in [
-                "narrativeqa", "qasper", "multifieldqa_en", "hotpotqa", "2wikimqa"
-            ]:
+            for sub in LONGBENCH_SUBTASKS:
                 try:
                     ds = hf_load_dataset(
                         "THUDM/LongBench", sub, cache_dir=self.cache_dir
@@ -493,6 +522,20 @@ class DatasetLoader:
         except Exception as exc:
             print(f"[DatasetLoader] LongBench load failed: {exc}")
             return self._longbench_fallback()
+
+    @staticmethod
+    def _longbench_local_subtasks(root: Path) -> List[str]:
+        """Known LongBench configs plus any extra subdirs under ``root``."""
+        names = list(LONGBENCH_SUBTASKS)
+        if root.is_dir():
+            for child in sorted(root.iterdir()):
+                if (
+                    child.is_dir()
+                    and not child.name.startswith(".")
+                    and child.name not in names
+                ):
+                    names.append(child.name)
+        return names
 
     def _humaneval(
         self,

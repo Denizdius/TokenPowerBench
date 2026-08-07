@@ -8,10 +8,12 @@ __pycache__/
 # Local model weights (large)
 Qwen3-8B-quantized.w4a16/
 
-# Offline dataset exports (save_to_disk + JSONL; copy to cluster manually)
-
+# Offline LongBench (~200MB JSONL) — rsync to cluster; do not commit
+longbench/
+longbench.jsonl
 
 # Benchmark outputs — all models, all JSON/logs under results/
+results/
 results/**
 !results/
 !results/.gitkeep
@@ -19,6 +21,8 @@ results/**
 # Synced benchmark result folders (JSON + job logs)
 tokenbench_qwen3_14b/
 tokenbench_qwen3.5_27b/
+tokenbench_*_multi_run_result/run_*/
+tokenbench_*_multi_run_result/logs/
 
 # vLLM run logs
 vllm_run_single_node.txt

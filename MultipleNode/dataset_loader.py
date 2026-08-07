@@ -111,17 +111,30 @@ class DatasetLoader:
         
         try:
             print("🔄 Loading LongBench dataset...")
-            # LongBench has multiple subtasks, we select several main ones
-            subtasks = ["narrativeqa", "qasper", "multifieldqa_en", "hotpotqa", "2wikimqa"]
-            
+            # Full THUDM/LongBench main suite (keep in sync with
+            # tokenpowerbench.data.loader.LONGBENCH_SUBTASKS)
+            subtasks = [
+                "narrativeqa", "qasper", "multifieldqa_en", "multifieldqa_zh",
+                "hotpotqa", "2wikimqa", "musique", "dureader", "gov_report",
+                "qmsum", "multi_news", "vcsum", "trec", "triviaqa", "samsum",
+                "lsht", "passage_count", "passage_retrieval_en",
+                "passage_retrieval_zh", "lcc", "repobench-p",
+            ]
+
             all_prompts = []
             for subtask in subtasks:
                 try:
                     dataset = load_dataset("THUDM/LongBench", subtask, cache_dir=self.cache_dir)
                     if "test" in dataset:
                         for item in dataset["test"]:
-                            if "input" in item:
-                                all_prompts.append(item["input"])
+                            question = str(item.get("input", "")).strip()
+                            context = str(item.get("context", "")).strip()
+                            if context and question:
+                                all_prompts.append(f"{context}\n\n{question}")
+                            elif context:
+                                all_prompts.append(context)
+                            elif question:
+                                all_prompts.append(question)
                 except Exception as e:
                     print(f"⚠️ Error loading LongBench subtask {subtask}: {e}")
                     continue

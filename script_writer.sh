@@ -19,7 +19,7 @@ SCRIPTS_DIR="benchmark_scripts"
 mkdir -p "$SCRIPTS_DIR"
 
 # 4. Generator Function
-# variant: "" (default) or "noeager"
+# variant: "" (default), "noeager", or "noeager_ctx8192"
 generate_scripts() {
     local model_name=$1
     local model_path=$2
@@ -46,8 +46,11 @@ generate_scripts() {
     esac
 
     local gpu_util="0.90"
+    local max_model_len=2048
     local eager_block="  --enforce-eager \\"
     local name_prefix=""
+    local name_suffix=""
+    local write_gpu_watch=0
     local run_body_after_max_len="  --monitor gpu_only \\"
     local run_tag="${model_name}_${strat}_bs${bs}_out${out}"
     local artifact_prefix="${run_tag}"
@@ -56,8 +59,18 @@ generate_scripts() {
         gpu_util="0.85"
         eager_block=""
         name_prefix="noeager_"
+        write_gpu_watch=1
         run_tag="${run_tag}_noeager"
         artifact_prefix="noeager_${model_name}_${strat}_bs${bs}_out${out}"
+    elif [ "$variant" == "noeager_ctx8192" ]; then
+        gpu_util="0.90"
+        max_model_len=8192
+        eager_block=""
+        name_prefix="noeager_"
+        name_suffix="_ctx8192"
+        write_gpu_watch=1
+        run_tag="${run_tag}_noeager_ctx8192"
+        artifact_prefix="noeager_${model_name}_${strat}_bs${bs}_out${out}_ctx8192"
     fi
 
     if [ -n "$eager_block" ]; then
@@ -73,7 +86,7 @@ generate_scripts() {
         run_tag_suffix=" \\"
     fi
 
-    local base_name="${model_name}_${strat}_bs${bs}_out${out}"
+    local base_name="${model_name}_${strat}_bs${bs}_out${out}${name_suffix}"
     local run_script="${SCRIPTS_DIR}/run_${name_prefix}${base_name}.sh"
     local nsys_script="${SCRIPTS_DIR}/nsys_${name_prefix}${base_name}.sh"
     local gpu_watch_script="${SCRIPTS_DIR}/gpu_watch_${name_prefix}${base_name}.sh"
@@ -96,7 +109,7 @@ python3 run_single_node.py \\
   --tensor-parallel-size $tp \\
   --pipeline-parallel-size $pp \\
   --data-parallel-size $dp \\
-  --max-model-len 2048 \\
+  --max-model-len $max_model_len \\
 ${run_body_after_max_len}
   --run-tag "$run_tag"${run_tag_suffix}
 ${extra_flags}
@@ -124,7 +137,7 @@ nsys profile \\
 EOT
     chmod +x "$nsys_script"
 
-    if [ "$variant" == "noeager" ]; then
+    if [ "$write_gpu_watch" -eq 1 ]; then
         cat <<EOT > "$gpu_watch_script"
 #!/bin/bash
 
@@ -142,7 +155,7 @@ python3 run_single_node.py \\
   --tensor-parallel-size $tp \\
   --pipeline-parallel-size $pp \\
   --data-parallel-size $dp \\
-  --max-model-len 2048 \\
+  --max-model-len $max_model_len \\
   --monitor gpu_only \\
   --save-gpu-usage \\
   --run-tag "$run_tag"${run_tag_suffix}
@@ -184,6 +197,15 @@ for w in "${WORKLOADS[@]}"; do
     out=$(echo $w | cut -d'_' -f2)
     for s in "${STRATS_27B[@]}"; do
         generate_scripts "qwen3.5_27b" "$MODEL_27B" "$s" "$bs" "$out" "noeager"
+    done
+done
+
+# 8. Generate no-eager ctx8192 for Qwen3-14B (gpu util 0.90, no --enforce-eager)
+for w in "${WORKLOADS[@]}"; do
+    bs=$(echo $w | cut -d'_' -f1)
+    out=$(echo $w | cut -d'_' -f2)
+    for s in "${STRATS_14B[@]}"; do
+        generate_scripts "qwen3_14b" "$MODEL_14B" "$s" "$bs" "$out" "noeager_ctx8192"
     done
 done
 

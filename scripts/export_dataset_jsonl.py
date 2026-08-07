@@ -10,6 +10,10 @@ inside Apptainer without ``datasets`` or ``pyarrow``:
       --output /gpfs/.../TokenPowerBench/alpaca.jsonl
 
   python3 run_single_node.py --dataset alpaca --dataset-path .../alpaca.jsonl ...
+
+For LongBench (download + JSONL in one step), prefer:
+
+  python3 scripts/prepare_longbench_offline.py --output-dir /gpfs/.../TokenPowerBench
 """
 
 from __future__ import annotations
