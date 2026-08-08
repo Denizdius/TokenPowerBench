@@ -13,6 +13,9 @@ longbench/
 longbench.jsonl
 longbench_en_nocode.jsonl
 
+# 10× SLURM launchers live on the server (/gpfs/projects/etur83/); rsync only
+scripts/run_10_tokenbench_*.sh
+
 # Benchmark outputs — all models, all JSON/logs under results/
 results/
 results/**
