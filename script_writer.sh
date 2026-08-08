@@ -5,7 +5,7 @@ BASE_DIR="/gpfs/projects/etur83/my_volume/lm-evaluation-harness/TokenPowerBench"
 MODEL_14B="/gpfs/projects/etur83/my_volume/lm-evaluation-harness/Qwen3-14B"
 MODEL_27B="/gpfs/projects/etur83/my_volume/lm-evaluation-harness/Qwen3.5-27B"
 ALPACA_PATH="${BASE_DIR}/alpaca.jsonl"
-LONGBENCH_PATH="${BASE_DIR}/longbench.jsonl"
+LONGBENCH_PATH="${BASE_DIR}/longbench_en_nocode.jsonl"
 
 # 2. Define Workloads (Batch_Output)
 WORKLOADS=("128_500" "256_500" "256_2000")
@@ -21,7 +21,7 @@ mkdir -p "$SCRIPTS_DIR"
 
 # 4. Generator Function
 # variant: "" | "noeager" | "noeager_ctx8192"
-#         | "eager_longbench_ctx8192" | "noeager_longbench_ctx8192"
+#         | "eager_longbench_ctx14848" | "noeager_longbench_ctx14848"
 generate_scripts() {
     local model_name=$1
     local model_path=$2
@@ -76,31 +76,31 @@ generate_scripts() {
         write_gpu_watch=1
         run_tag="${run_tag}_noeager_ctx8192"
         artifact_prefix="noeager_${model_name}_${strat}_bs${bs}_out${out}_ctx8192"
-    elif [ "$variant" == "eager_longbench_ctx8192" ]; then
+    elif [ "$variant" == "eager_longbench_ctx14848" ]; then
         gpu_util="0.90"
-        max_model_len=8192
+        max_model_len=14848
         eager_block="  --enforce-eager \\"
-        name_suffix="_longbench_ctx8192"
+        name_suffix="_longbench_ctx14848"
         write_gpu_watch=1
         dataset="longbench"
         dataset_path="$LONGBENCH_PATH"
-        word_filter_block="  --min-words 1000 \\
-  --max-words 4000 \\"
-        run_tag="${run_tag}_longbench_ctx8192"
-        artifact_prefix="${model_name}_${strat}_bs${bs}_out${out}_longbench_ctx8192"
-    elif [ "$variant" == "noeager_longbench_ctx8192" ]; then
+        word_filter_block="  --min-words 800 \\
+  --max-words 6000 \\"
+        run_tag="${run_tag}_longbench_ctx14848"
+        artifact_prefix="${model_name}_${strat}_bs${bs}_out${out}_longbench_ctx14848"
+    elif [ "$variant" == "noeager_longbench_ctx14848" ]; then
         gpu_util="0.90"
-        max_model_len=8192
+        max_model_len=14848
         eager_block=""
         name_prefix="noeager_"
-        name_suffix="_longbench_ctx8192"
+        name_suffix="_longbench_ctx14848"
         write_gpu_watch=1
         dataset="longbench"
         dataset_path="$LONGBENCH_PATH"
-        word_filter_block="  --min-words 1000 \\
-  --max-words 4000 \\"
-        run_tag="${run_tag}_noeager_longbench_ctx8192"
-        artifact_prefix="noeager_${model_name}_${strat}_bs${bs}_out${out}_longbench_ctx8192"
+        word_filter_block="  --min-words 800 \\
+  --max-words 6000 \\"
+        run_tag="${run_tag}_noeager_longbench_ctx14848"
+        artifact_prefix="noeager_${model_name}_${strat}_bs${bs}_out${out}_longbench_ctx14848"
     fi
 
     if [ -n "$eager_block" ]; then
@@ -241,13 +241,13 @@ for w in "${WORKLOADS[@]}"; do
     done
 done
 
-# 9. LongBench ctx8192 for Qwen3-14B (eager + noeager; words 1000–4000)
+# 9. LongBench ctx14848 for Qwen3-14B (eager + noeager; EN words 800–6000)
 for w in "${WORKLOADS[@]}"; do
     bs=$(echo $w | cut -d'_' -f1)
     out=$(echo $w | cut -d'_' -f2)
     for s in "${STRATS_14B[@]}"; do
-        generate_scripts "qwen3_14b" "$MODEL_14B" "$s" "$bs" "$out" "eager_longbench_ctx8192"
-        generate_scripts "qwen3_14b" "$MODEL_14B" "$s" "$bs" "$out" "noeager_longbench_ctx8192"
+        generate_scripts "qwen3_14b" "$MODEL_14B" "$s" "$bs" "$out" "eager_longbench_ctx14848"
+        generate_scripts "qwen3_14b" "$MODEL_14B" "$s" "$bs" "$out" "noeager_longbench_ctx14848"
     done
 done
 

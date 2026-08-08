@@ -8,9 +8,10 @@ __pycache__/
 # Local model weights (large)
 Qwen3-8B-quantized.w4a16/
 
-# Offline LongBench (~200MB JSONL) — rsync to cluster; do not commit
+# Offline LongBench JSONL — rsync to cluster; do not commit
 longbench/
 longbench.jsonl
+longbench_en_nocode.jsonl
 
 # Benchmark outputs — all models, all JSON/logs under results/
 results/

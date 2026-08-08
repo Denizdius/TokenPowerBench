@@ -110,23 +110,29 @@ class DatasetLoader:
             return self._get_longbench_fallback()
         
         try:
-            print("🔄 Loading LongBench dataset...")
-            # Full THUDM/LongBench main suite (keep in sync with
-            # tokenpowerbench.data.loader.LONGBENCH_SUBTASKS)
+            print("🔄 Loading LongBench dataset (English, non-code)...")
+            # Keep in sync with tokenpowerbench.data.loader.LONGBENCH_EN_NOCODE_SUBTASKS
             subtasks = [
-                "narrativeqa", "qasper", "multifieldqa_en", "multifieldqa_zh",
-                "hotpotqa", "2wikimqa", "musique", "dureader", "gov_report",
-                "qmsum", "multi_news", "vcsum", "trec", "triviaqa", "samsum",
-                "lsht", "passage_count", "passage_retrieval_en",
-                "passage_retrieval_zh", "lcc", "repobench-p",
+                "narrativeqa", "qasper", "multifieldqa_en", "hotpotqa",
+                "2wikimqa", "musique", "gov_report", "qmsum", "multi_news",
+                "trec", "triviaqa", "samsum", "passage_count",
+                "passage_retrieval_en",
             ]
+            code_sets = {"lcc", "repobench-p"}
 
             all_prompts = []
+            raw_n = en_n = 0
             for subtask in subtasks:
                 try:
                     dataset = load_dataset("THUDM/LongBench", subtask, cache_dir=self.cache_dir)
                     if "test" in dataset:
                         for item in dataset["test"]:
+                            raw_n += 1
+                            if str(item.get("language", "")).lower() not in ("", "en"):
+                                continue
+                            if str(item.get("dataset", subtask)).lower() in code_sets:
+                                continue
+                            en_n += 1
                             question = str(item.get("input", "")).strip()
                             context = str(item.get("context", "")).strip()
                             if context and question:
@@ -138,10 +144,14 @@ class DatasetLoader:
                 except Exception as e:
                     print(f"⚠️ Error loading LongBench subtask {subtask}: {e}")
                     continue
-            
+
+            print(
+                f"[DatasetLoader] LongBench: {raw_n} raw → {en_n} after language=en "
+                f"→ {len(all_prompts)} prompts"
+            )
             if not all_prompts:
                 return self._get_longbench_fallback()
-            
+
             return self._filter_and_sample(all_prompts, num_samples, min_length, max_length, "LongBench")
             
         except Exception as e:

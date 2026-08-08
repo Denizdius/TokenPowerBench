@@ -65,6 +65,23 @@ LONGBENCH_SUBTASKS = (
     "repobench-p",
 )
 
+# Energy/long-context campaign defaults: English only, no code completion.
+LONGBENCH_CODE_SUBTASKS = frozenset({"lcc", "repobench-p"})
+LONGBENCH_ZH_SUBTASKS = frozenset(
+    {
+        "multifieldqa_zh",
+        "dureader",
+        "vcsum",
+        "lsht",
+        "passage_retrieval_zh",
+    }
+)
+LONGBENCH_EN_NOCODE_SUBTASKS = tuple(
+    s
+    for s in LONGBENCH_SUBTASKS
+    if s not in LONGBENCH_CODE_SUBTASKS and s not in LONGBENCH_ZH_SUBTASKS
+)
+
 
 class DatasetLoader:
     """
@@ -419,6 +436,8 @@ class DatasetLoader:
         path = Path(local_path).expanduser().resolve()
         try:
             rows = self._load_local_records(path)
+            if dataset == "longbench":
+                return self._longbench_rows_to_sampled(rows, n, min_w, max_w)
             prompts = self._rows_to_prompts(rows, dataset)
             if prompts:
                 return self._filter_sample(prompts, n, min_w, max_w, label)
@@ -483,45 +502,80 @@ class DatasetLoader:
     ) -> List[str]:
         if local_path:
             root = Path(local_path).expanduser().resolve()
-            prompts: List[str] = []
+            rows: List[Dict[str, Any]] = []
             subtasks = self._longbench_local_subtasks(root)
             for sub in subtasks:
                 sub_path = root / sub
                 if sub_path.is_dir():
                     try:
-                        rows = self._load_local_records(sub_path)
-                        prompts.extend(
-                            self._rows_to_prompts(rows, "longbench")
-                        )
+                        rows.extend(self._load_local_records(sub_path))
                     except Exception as exc:
                         print(f"[DatasetLoader] LongBench/{sub}: {exc}")
-            if not prompts:
+            if not rows:
                 out = self._load_local_prompts(
                     local_path, "longbench", "LongBench", n, min_w, max_w
                 )
                 return out if out is not None else []
-            return self._filter_sample(prompts, n, min_w, max_w, "LongBench")
+            return self._longbench_rows_to_sampled(rows, n, min_w, max_w)
 
         try:
             if not _HF_AVAILABLE:
                 return self._longbench_fallback()
-            prompts = []
-            for sub in LONGBENCH_SUBTASKS:
+            rows: List[Dict[str, Any]] = []
+            # Hub path: only English non-code configs (same campaign filter).
+            for sub in LONGBENCH_EN_NOCODE_SUBTASKS:
                 try:
                     ds = hf_load_dataset(
                         "THUDM/LongBench", sub, cache_dir=self.cache_dir
                     )
-                    prompts.extend(
-                        self._rows_to_prompts(self._iter_items(ds, "test"), "longbench")
-                    )
+                    rows.extend(list(self._iter_items(ds, "test")))
                 except Exception as exc:
                     print(f"[DatasetLoader] LongBench/{sub} failed: {exc}")
-            if not prompts:
+            if not rows:
                 return self._longbench_fallback()
-            return self._filter_sample(prompts, n, min_w, max_w, "LongBench")
+            return self._longbench_rows_to_sampled(rows, n, min_w, max_w)
         except Exception as exc:
             print(f"[DatasetLoader] LongBench load failed: {exc}")
             return self._longbench_fallback()
+
+    def _longbench_rows_to_sampled(
+        self,
+        rows: List[Dict[str, Any]],
+        n: int,
+        min_w: int,
+        max_w: int,
+    ) -> List[str]:
+        """Filter LongBench rows: language=en, drop code, then word filter + sample."""
+        raw_n = len(rows)
+        en_rows = [
+            r
+            for r in rows
+            if str(r.get("language", "")).strip().lower() == "en"
+        ]
+        # Rows without a language tag stay only if dataset is known EN/non-code.
+        if not en_rows and rows:
+            en_rows = [
+                r
+                for r in rows
+                if str(r.get("dataset", "")).strip().lower()
+                in LONGBENCH_EN_NOCODE_SUBTASKS
+            ]
+        kept = [
+            r
+            for r in en_rows
+            if str(r.get("dataset", "")).strip().lower()
+            not in LONGBENCH_CODE_SUBTASKS
+            and str(r.get("dataset", "")).strip().lower()
+            not in LONGBENCH_ZH_SUBTASKS
+        ]
+        prompts = self._rows_to_prompts(kept, "longbench")
+        print(
+            f"[DatasetLoader] LongBench: {raw_n} raw → "
+            f"{len(en_rows)} after language=en → "
+            f"{len(kept)} after drop code/zh → "
+            f"{len(prompts)} prompts"
+        )
+        return self._filter_sample(prompts, n, min_w, max_w, "LongBench")
 
     @staticmethod
     def _longbench_local_subtasks(root: Path) -> List[str]:
@@ -573,14 +627,14 @@ class DatasetLoader:
     ) -> List[str]:
         filtered = [p for p in prompts if min_w <= len(p.split()) <= max_w]
         print(
-            f"[DatasetLoader] {name}: {len(prompts)} raw → "
-            f"{len(filtered)} after length filter ({min_w}–{max_w} words)"
+            f"[DatasetLoader] {name}: {len(prompts)} prompts → "
+            f"{len(filtered)} after words ({min_w}–{max_w})"
         )
         if n < len(filtered):
             sampled = random.sample(filtered, n)
-            print(f"[DatasetLoader] Sampled {n} from {len(filtered)}")
+            print(f"[DatasetLoader] {name}: sampled {n} from {len(filtered)}")
             return sampled
-        print(f"[DatasetLoader] Using all {len(filtered)} prompts")
+        print(f"[DatasetLoader] {name}: using all {len(filtered)} prompts")
         return filtered
 
     @staticmethod
