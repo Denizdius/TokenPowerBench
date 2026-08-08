@@ -188,7 +188,7 @@ ${word_filter_block}
   --pipeline-parallel-size $pp \\
   --data-parallel-size $dp \\
   --max-model-len $max_model_len \\
-  --monitor gpu_only \\
+${run_body_after_max_len}
   --save-gpu-usage \\
   --run-tag "$run_tag"${run_tag_suffix}
 ${extra_flags}

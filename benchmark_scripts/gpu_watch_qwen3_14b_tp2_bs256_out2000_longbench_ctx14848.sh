@@ -17,6 +17,7 @@ python3 run_single_node.py \
   --pipeline-parallel-size 1 \
   --data-parallel-size 1 \
   --max-model-len 14848 \
+  --enforce-eager \
   --monitor gpu_only \
   --save-gpu-usage \
   --run-tag "qwen3_14b_tp2_bs256_out2000_longbench_ctx14848"
