@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 
 import matplotlib as mpl
@@ -11,15 +12,28 @@ import numpy as np
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
-ANALYSIS_CSV = (
-    ROOT
-    / "tokenbench_qwen3_14b_27b_noeager_multi_run_result"
-    / "analysis"
-    / "csv"
-)
-CSV = ANALYSIS_CSV / "summary_min_max_excluded.csv"
-COMPARE_CSV = ANALYSIS_CSV / "eager_vs_noeager_absolute.csv"
 OUT = ROOT / "paper_figures"
+
+CAMPAIGNS = {
+    "alpaca": {
+        "analysis_csv": ROOT
+        / "tokenbench_qwen3_14b_27b_noeager_multi_run_result"
+        / "analysis"
+        / "csv",
+        "dataset_label": "Alpaca",
+        "models": ["Qwen3-14B", "Qwen3.5-27B"],
+        "filename_infix": "",
+    },
+    "longbench": {
+        "analysis_csv": ROOT
+        / "tokenbench_qwen3_14b_longbench_noeager_multi_run_result"
+        / "analysis"
+        / "csv",
+        "dataset_label": "LongBench",
+        "models": ["Qwen3-14B"],
+        "filename_infix": "longbench_",
+    },
+}
 
 # noeager = torch.compile / CUDA graphs enabled; eager = enforce-eager
 COLOR_COMPILE_ON = "#2A9D8F"
@@ -44,8 +58,6 @@ WORKLOADS = [
     ("bs256_out500", "Batch Size 256, Output Tokens Limit 500"),
     ("bs256_out2000", "Batch Size 256, Output Tokens Limit 2000"),
 ]
-
-MODELS = ["Qwen3-14B", "Qwen3.5-27B"]
 
 PALETTE = [
     "#4C72B0",
@@ -96,6 +108,7 @@ def plot_figure(
     model: str,
     workload: str,
     workload_title: str,
+    dataset_label: str,
     out_stem: Path,
 ) -> None:
     sub = df[(df["model_name"] == model) & (df["workload"] == workload)].copy()
@@ -116,7 +129,12 @@ def plot_figure(
 
     width = 10.5 if len(configs) <= 4 else 12.5
     fig, axes = plt.subplots(2, 2, figsize=(width, 7.2))
-    fig.suptitle(f"{model}\n{workload_title}", fontsize=13, fontweight="bold", y=0.98)
+    fig.suptitle(
+        f"{model} — {dataset_label}\n{workload_title}",
+        fontsize=13,
+        fontweight="bold",
+        y=0.98,
+    )
 
     panels = [
         (axes[0, 0], latency, "Latency (s)", "{:.1f}"),
@@ -166,9 +184,10 @@ def plot_torch_compile_figure(
     model: str,
     workload: str,
     workload_title: str,
+    dataset_label: str,
     out_stem: Path,
 ) -> None:
-    """Grouped On/Off bars for configs with >10% duration difference."""
+    """Grouped On/Off bars for configs with at least 10% duration difference."""
     sub = df[(df["model_name"] == model) & (df["workload"] == workload)].copy()
     if sub.empty:
         print(f"No torch-compile diffs for {model} {workload}")
@@ -209,7 +228,7 @@ def plot_torch_compile_figure(
     width = 9.5 if n <= 2 else (11.5 if n <= 4 else 13.0)
     fig, axes = plt.subplots(2, 2, figsize=(width, 7.4))
     fig.suptitle(
-        f"{model}\n{workload_title}\nTorch Compile On vs Off",
+        f"{model} — {dataset_label}\n{workload_title}\nTorch Compile On vs Off",
         fontsize=13,
         fontweight="bold",
         y=0.995,
@@ -275,26 +294,50 @@ def plot_torch_compile_figure(
     plt.close(fig)
 
 
-def load_torch_compile_diffs(threshold_pct: float = DURATION_DIFF_THRESHOLD_PCT) -> pd.DataFrame:
-    df = pd.read_csv(COMPARE_CSV)
+def load_torch_compile_diffs(
+    compare_csv: Path,
+    threshold_pct: float = DURATION_DIFF_THRESHOLD_PCT,
+) -> pd.DataFrame:
+    df = pd.read_csv(compare_csv)
     pct = (df["duration_noeager"] - df["duration_eager"]).abs() / df["duration_eager"] * 100.0
-    return df[pct > threshold_pct].copy()
+    return df[pct >= threshold_pct].copy()
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Generate TokenPowerBench paper figures")
+    parser.add_argument(
+        "--campaign",
+        choices=CAMPAIGNS,
+        default="alpaca",
+        help="Dataset campaign to render (default: alpaca)",
+    )
+    parser.add_argument(
+        "--all-comparisons",
+        action="store_true",
+        help="Render Torch Compile comparisons for every configuration",
+    )
+    args = parser.parse_args()
+
     setup_style()
     OUT.mkdir(parents=True, exist_ok=True)
-    df = pd.read_csv(CSV)
+    campaign = CAMPAIGNS[args.campaign]
+    analysis_csv = campaign["analysis_csv"]
+    dataset_label = campaign["dataset_label"]
+    filename_infix = campaign["filename_infix"]
+    df = pd.read_csv(analysis_csv / "summary_min_max_excluded.csv")
 
-    for model in MODELS:
+    for model in campaign["models"]:
         for workload, title in WORKLOADS:
-            stem = OUT / f"{model_slug(model)}_{workload}"
-            plot_figure(df, model, workload, title, stem)
+            stem = OUT / f"{model_slug(model)}_{filename_infix}{workload}"
+            plot_figure(df, model, workload, title, dataset_label, stem)
 
-    # Torch Compile On/Off — only configs with duration |Δ| > 10%
-    cmp_df = load_torch_compile_diffs()
+    threshold_pct = 0.0 if args.all_comparisons else DURATION_DIFF_THRESHOLD_PCT
+    cmp_df = load_torch_compile_diffs(
+        analysis_csv / "eager_vs_noeager_absolute.csv",
+        threshold_pct=threshold_pct,
+    )
     print(
-        f"\nTorch Compile diffs with duration |Δ| > {DURATION_DIFF_THRESHOLD_PCT}%: "
+        f"\nTorch Compile diffs with duration |Δ| >= {threshold_pct}%: "
         f"{len(cmp_df)} configs"
     )
     print(
@@ -303,8 +346,8 @@ def main() -> None:
     workload_titles = dict(WORKLOADS)
     for (model, workload), group in cmp_df.groupby(["model_name", "workload"], sort=False):
         title = workload_titles.get(workload, workload)
-        stem = OUT / f"{model_slug(model)}_{workload}_torch_compile"
-        plot_torch_compile_figure(group, model, workload, title, stem)
+        stem = OUT / f"{model_slug(model)}_{filename_infix}{workload}_torch_compile"
+        plot_torch_compile_figure(group, model, workload, title, dataset_label, stem)
 
 
 if __name__ == "__main__":

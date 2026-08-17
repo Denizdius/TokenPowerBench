@@ -2,10 +2,9 @@
 """
 Analyze TokenPowerBench multi-run benchmark results.
 
-For each of 10 runs, 2 models, and 3 workloads (normal / high concurrency / high
-throughput), produces bar-chart plots and CSV summaries. Aggregates across runs
-with mean, average min max excluded, percentiles, min–max spread, and
-ANOVA / factorial statistics.
+For each run, model, and workload, produces bar-chart plots and CSV summaries.
+Aggregates across runs with mean, average min max excluded, percentiles,
+min–max spread, and ANOVA / factorial statistics.
 """
 
 from __future__ import annotations
@@ -91,7 +90,8 @@ METRIC_COLUMNS = {
 METRIC_COLUMN_ORDER = [METRIC_COLUMNS[k] for k in METRIC_KEYS]
 
 JSON_NAME_RE = re.compile(
-    r"^(qwen3(?:\.5_27b|_14b))_(.+)_bs(\d+)_out(\d+)(?:_noeager)?_(\d{8}_\d{6})\.json$"
+    r"^(qwen3(?:\.5_27b|_14b))_(.+)_bs(\d+)_out(\d+)"
+    r"(?:_noeager)?(?:_longbench_ctx\d+)?_(\d{8}_\d{6})\.json$"
 )
 
 
@@ -1025,17 +1025,21 @@ def write_factorial_csv(df: pd.DataFrame, path: Path, model_path: Path) -> None:
             "eta_squared": "eta",
         },
     )
-    model_wide.sort_values(["config", "workload"], inplace=True)
+    if model_wide.empty:
+        model_wide = pd.DataFrame(columns=["config", "workload"])
+    else:
+        model_wide.sort_values(["config", "workload"], inplace=True)
     round_dataframe_floats(model_wide).to_csv(model_path, index=False)
 
 
 def write_report_md(df: pd.DataFrame, out_root: Path, paths: dict[str, Path]) -> None:
     n_runs = df["run_id"].nunique()
+    models = sorted(df["model_name"].unique())
     lines = [
         "# TokenPowerBench multi-run analysis report",
         "",
         f"- Runs analyzed: **{n_runs}**",
-        f"- Models: {', '.join(MODELS.values())}",
+        f"- Models: {', '.join(models)}",
         f"- Workloads: normal (bs128/out500), high concurrency (bs256/out500), high throughput (bs256/out2000)",
         "",
         "## Outputs",
@@ -1060,7 +1064,7 @@ def write_report_md(df: pd.DataFrame, out_root: Path, paths: dict[str, Path]) ->
         "",
         "## Statistics notes",
         "",
-        "- **Average min max excluded**: for 10 runs, drops the single lowest and highest value before averaging.",
+        f"- **Average min max excluded**: for {n_runs} runs, drops the single lowest and highest value before averaging.",
         "- **One-way ANOVA**: compares configs (workload fixed, config blank) or workloads (config fixed, workload blank) per metric.",
         "- **Two-way ANOVA**: config × workload interaction per model; η² reports effect size.",
         "- **p99 / p95**: run-to-run percentiles from repeated benchmark executions, not request latency.",

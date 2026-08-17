@@ -13,6 +13,7 @@ Depends only on numpy + matplotlib (no pandas) for faster startup.
 
 from __future__ import annotations
 
+import argparse
 import csv
 from pathlib import Path
 
@@ -52,34 +53,42 @@ GPU_GROUPS = {
     },
 }
 
-DATASETS = {
-    "eager": {
-        "csv": ROOT
-        / "tokenbench_qwen3_14b_27b_multi_run_result"
-        / "analysis"
-        / "csv"
-        / "summary_min_max_excluded.csv",
-        "out_dir": ROOT
-        / "tokenbench_qwen3_14b_27b_multi_run_result"
-        / "analysis"
-        / "plots"
-        / "heatmaps",
-        "mode_label": "Eager",
+CAMPAIGNS = {
+    "alpaca": {
+        "dataset_label": "Alpaca",
+        "eager_root": ROOT / "tokenbench_qwen3_14b_27b_multi_run_result",
+        "noeager_root": ROOT / "tokenbench_qwen3_14b_27b_noeager_multi_run_result",
     },
-    "noeager": {
-        "csv": ROOT
-        / "tokenbench_qwen3_14b_27b_noeager_multi_run_result"
-        / "analysis"
-        / "csv"
-        / "summary_min_max_excluded.csv",
-        "out_dir": ROOT
-        / "tokenbench_qwen3_14b_27b_noeager_multi_run_result"
-        / "analysis"
-        / "plots"
-        / "heatmaps",
-        "mode_label": "No-Eager",
+    "longbench": {
+        "dataset_label": "LongBench",
+        "eager_root": ROOT / "tokenbench_qwen3_14b_longbench_multi_run_result",
+        "noeager_root": ROOT / "tokenbench_qwen3_14b_longbench_noeager_multi_run_result",
     },
 }
+
+
+def campaign_datasets(campaign: str) -> dict[str, dict[str, Path | str]]:
+    meta = CAMPAIGNS[campaign]
+    return {
+        "eager": {
+            "csv": meta["eager_root"]
+            / "analysis"
+            / "csv"
+            / "summary_min_max_excluded.csv",
+            "out_dir": meta["eager_root"] / "analysis" / "plots" / "heatmaps",
+            "mode_label": "Eager",
+            "dataset_label": meta["dataset_label"],
+        },
+        "noeager": {
+            "csv": meta["noeager_root"]
+            / "analysis"
+            / "csv"
+            / "summary_min_max_excluded.csv",
+            "out_dir": meta["noeager_root"] / "analysis" / "plots" / "heatmaps",
+            "mode_label": "No-Eager",
+            "dataset_label": meta["dataset_label"],
+        },
+    }
 
 
 def load_rows(csv_path: Path) -> list[dict[str, str]]:
@@ -145,6 +154,7 @@ def plot_gpu_group(
     *,
     mode_key: str,
     mode_label: str,
+    dataset_label: str,
     group_key: str,
     out_dir: Path,
 ) -> Path | None:
@@ -203,7 +213,7 @@ def plot_gpu_group(
         ax.set_yticklabels([])
 
     fig.suptitle(
-        f"Heatmap of Energy per Token — {mode_label} — {group['title']}\n"
+        f"Heatmap of Energy per Token — {dataset_label} — {mode_label} — {group['title']}\n"
         f"(average, min/max run excluded)",
         fontsize=13,
         fontweight="bold",
@@ -220,8 +230,17 @@ def plot_gpu_group(
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Plot multi-run energy-per-token heatmaps")
+    parser.add_argument(
+        "--campaign",
+        choices=CAMPAIGNS,
+        default="alpaca",
+        help="Result campaign to plot (default: alpaca)",
+    )
+    args = parser.parse_args()
+
     written: list[Path] = []
-    for mode_key, meta in DATASETS.items():
+    for mode_key, meta in campaign_datasets(args.campaign).items():
         csv_path = meta["csv"]
         if not csv_path.exists():
             print(f"Missing {csv_path}, skipping {mode_key}", flush=True)
@@ -233,6 +252,7 @@ def main() -> None:
                 rows,
                 mode_key=mode_key,
                 mode_label=meta["mode_label"],
+                dataset_label=meta["dataset_label"],
                 group_key=group_key,
                 out_dir=meta["out_dir"],
             )
