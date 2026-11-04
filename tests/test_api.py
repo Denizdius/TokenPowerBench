@@ -129,6 +129,11 @@ class APITests(unittest.TestCase):
             {"gpu_memory_utilization": float("inf")}, {"gpu_memory_utilization": 0},
             {"gpu_memory_utilization": 1.1}, {"gpu_memory_utilization": True},
             {"output_dir": ""}, {"monitor": "unknown"},
+            {"data_parallel_size": 0}, {"data_parallel_size": True},
+            {"pipeline_parallel_size": 0}, {"dtype": "int8"},
+            {"phase_profiling": True, "data_parallel_size": 2, "tensor_parallel_size": 1},
+            {"dp_num_nodes": 2}, {"enforce_eager": 1}, {"language_model_only": 1},
+            {"lora_path": ""}, {"run_tag": "campaign/result"},
         ]
         with patch.object(api, "create_monitor") as create:
             for overrides in invalid:
@@ -168,6 +173,47 @@ class APITests(unittest.TestCase):
             self.assertEqual(json.loads((cli_dir / "results.json").read_text()), direct.results)
             self.assertEqual(json.loads((cli_dir / "config.json").read_text()),
                              json.loads((direct.output_dir / "config.json").read_text()))
+
+    def test_cli_forwards_parallelism_lora_and_local_dataset_options(self):
+        engine, monitor = self.resources()
+        selected = StubMonitor()
+        selected.save_gpu_usage = Mock(return_value={"power": "power.json", "memory": "memory.json", "utilization": "utilization.json"})
+        created = []
+
+        def factory(*args, **kwargs):
+            created.append((args, kwargs))
+            return monitor if len(created) == 1 else selected
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data = root / "alpaca.jsonl"
+            data.write_text('{"instruction": "Measure this local alpaca row"}\n')
+            adapter = root / "adapter"
+            adapter.mkdir()
+            argv = ["--model", "test-model", "--dataset", "alpaca", "--dataset-path", str(data),
+                    "--language-model-only", "--num-samples", "1", "--batch-sizes", "1",
+                    "--tensor-parallel-size", "1", "--pipeline-parallel-size", "1",
+                    "--data-parallel-size", "2", "--enforce-eager", "--dtype", "bfloat16",
+                    "--lora-path", str(adapter), "--max-lora-rank", "16", "--lora-name", "tuned",
+                    "--save-gpu-usage", "--run-tag", "campaign", "--output-dir", directory,
+                    "--min-words", "2", "--max-words", "20"]
+            parsed = cli.parse_args(argv)
+            self.assertTrue(parsed.language_model_only and parsed.enforce_eager)
+            self.assertEqual(parsed.data_parallel_size, 2)
+            monitor.capabilities = {"gpu": {"devices": [{"index": 4}, {"index": 5}, {"index": 6}]}}
+            with patch.object(api, "create_monitor", side_effect=factory), contextlib.redirect_stdout(io.StringIO()):
+                status = cli.main(argv)
+            self.assertEqual(status, 0)
+            tagged = list(root.glob("campaign_*.json"))
+            self.assertEqual(len(tagged), 1)
+        self.assertEqual(created[1][1]["device_indices"], [4, 5])
+        self.assertEqual(engine.setup_options["data_parallel_size"], 2)
+        self.assertEqual(engine.setup_options["dtype"], "bfloat16")
+        self.assertTrue(engine.setup_options["enforce_eager"])
+        self.assertTrue(engine.setup_options["language_model_only"])
+        self.assertTrue(str(engine.setup_options["lora_path"]).endswith("adapter"))
+        self.assertEqual(selected.save_gpu_usage.call_count, 1)
+        self.assertTrue(monitor.closed)
 
     def test_engine_core_shutdown_is_called_once_and_clears_model_reference(self):
         shutdown = Mock()

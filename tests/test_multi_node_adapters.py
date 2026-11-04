@@ -82,7 +82,10 @@ import MultipleNode.vllm_engine
 
     def test_dataset_failures_and_unknown_names_do_not_return_synthetic_prompts(self):
         from tokenpowerbench.data import loader as shared
-        with patch.object(shared, "_HF_AVAILABLE", False), redirect_stdout(io.StringIO()):
+        with patch.object(shared, "_HF_AVAILABLE", False), \
+                patch.object(shared, "download_longbench_zip", side_effect=RuntimeError(
+                    "LongBench dataset unavailable; no synthetic fallback is allowed")), \
+                redirect_stdout(io.StringIO()):
             loader = dataset_loader.DatasetLoader()
             for name in ("alpaca", "dolly", "longbench", "humaneval"):
                 with self.subTest(name=name), self.assertRaises(RuntimeError):

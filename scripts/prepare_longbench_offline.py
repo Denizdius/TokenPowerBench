@@ -1,26 +1,22 @@
 #!/usr/bin/env python3
 """
-Download the full LongBench main suite (21 subtasks; same list as
-DatasetLoader.LONGBENCH_SUBTASKS) and write an offline copy shaped like Alpaca:
+Download LongBench ``data.zip`` (the Hub dataset script is not used) and write
+an offline JSONL. The default is the English non-code task list. ``--all-tasks``
+keeps the Chinese and code tasks as well. The benchmark loader still drops
+prompts longer than 12,848 Qwen3.5-2B tokens at run time.
 
-  longbench/                 # optional save_to_disk per subtask
-    narrativeqa/
-    qasper/
-    ...
-  longbench.jsonl            # flat JSONL for Apptainer (stdlib-friendly)
-
-Run once on a login node with HuggingFace ``datasets`` + network, then point
-benchmarks at the JSONL (no Hub / no ``datasets`` needed inside the container):
+  longbench.jsonl
+  longbench/<task>.jsonl
 
   python3 scripts/prepare_longbench_offline.py \\
-      --output-dir /gpfs/.../TokenPowerBench
+      --output-dir /path/to/TokenPowerBench
 
-  python3 run_single_node.py \\
+  tokenpowerbench \\
       --dataset longbench \\
-      --dataset-path /gpfs/.../TokenPowerBench/longbench.jsonl \\
-      --min-words 500 --max-words 4000 \\
-      --max-model-len 8192 \\
-      ...
+      --dataset-path /path/to/TokenPowerBench/longbench.jsonl \\
+      --min-words 800 --max-words 6000 \\
+      --max-model-len 14848 \\
+      --language-model-only
 """
 
 from __future__ import annotations
@@ -31,33 +27,12 @@ import statistics
 from pathlib import Path
 from typing import Any, Dict, List
 
-try:
-    from tokenpowerbench.data.loader import LONGBENCH_SUBTASKS as SUBTASKS
-except ImportError:
-    # Fallback if package import path is unavailable on the login node
-    SUBTASKS = (
-        "narrativeqa",
-        "qasper",
-        "multifieldqa_en",
-        "multifieldqa_zh",
-        "hotpotqa",
-        "2wikimqa",
-        "musique",
-        "dureader",
-        "gov_report",
-        "qmsum",
-        "multi_news",
-        "vcsum",
-        "trec",
-        "triviaqa",
-        "samsum",
-        "lsht",
-        "passage_count",
-        "passage_retrieval_en",
-        "passage_retrieval_zh",
-        "lcc",
-        "repobench-p",
-    )
+from tokenpowerbench.data.loader import (
+    LONGBENCH_EN_NOCODE_SUBTASKS,
+    LONGBENCH_SUBTASKS,
+    download_longbench_zip,
+    read_longbench_zip,
+)
 
 
 def _prompt_from_row(row: Dict[str, Any]) -> str:
@@ -83,101 +58,55 @@ def _print_stats(word_counts: List[int], label: str) -> None:
         f"[{label}] n={len(wc)}  "
         f"min={wc[0]}  p25={wc[len(wc)//4]}  "
         f"median={statistics.median(wc):.0f}  "
-        f"p75={wc[(3*len(wc))//4]}  max={wc[-1]}  "
+        f"p75={wc[(3 * len(wc)) // 4]}  max={wc[-1]}  "
         f"mean={statistics.mean(wc):.0f} words"
     )
-    for lo, hi in ((2, 300), (500, 4000), (1000, 6000), (2000, 8000)):
+    for lo, hi in ((800, 6000), (2, 300), (500, 4000)):
         n = sum(1 for w in wc if lo <= w <= hi)
         print(f"  words {lo}–{hi}: {n} prompts")
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(
-        description="Download LongBench offline (save_to_disk + JSONL)"
-    )
-    p.add_argument(
-        "--output-dir",
-        type=Path,
-        default=Path("."),
-        help="Directory for longbench/ and longbench.jsonl (default: .)",
-    )
-    p.add_argument(
-        "--cache-dir",
-        default=None,
-        help="HuggingFace datasets cache_dir (optional)",
-    )
-    p.add_argument(
-        "--skip-save-to-disk",
-        action="store_true",
-        help="Only write longbench.jsonl (skip per-subtask save_to_disk folders)",
-    )
-    p.add_argument(
-        "--repo",
-        default="THUDM/LongBench",
-        help="HF dataset repo (default: THUDM/LongBench)",
-    )
-    args = p.parse_args()
+    parser = argparse.ArgumentParser(description="Download LongBench data.zip and write JSONL")
+    parser.add_argument("--output-dir", type=Path, default=Path("."), help="Directory for longbench.jsonl")
+    parser.add_argument("--cache-dir", default=None, help="Directory for the cached data.zip")
+    parser.add_argument("--all-tasks", action="store_true", help="Keep Chinese and code tasks in the JSONL")
+    parser.add_argument("--flat-only", action="store_true", help="Write only the combined JSONL, not per-task files")
+    args = parser.parse_args()
 
-    try:
-        from datasets import load_dataset
-    except ImportError as exc:
-        raise SystemExit(
-            "Needs HuggingFace `datasets` (run on login node):\n"
-            "  pip install datasets"
-        ) from exc
-
+    tasks = list(LONGBENCH_SUBTASKS) if args.all_tasks else list(LONGBENCH_EN_NOCODE_SUBTASKS)
+    zip_path = download_longbench_zip(args.cache_dir)
+    rows = read_longbench_zip(zip_path, tasks)
     out_root = args.output_dir.expanduser().resolve()
-    disk_root = out_root / "longbench"
-    jsonl_path = out_root / "longbench.jsonl"
     out_root.mkdir(parents=True, exist_ok=True)
-    if not args.skip_save_to_disk:
-        disk_root.mkdir(parents=True, exist_ok=True)
+    jsonl_path = out_root / "longbench.jsonl"
+    with jsonl_path.open("w", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
 
-    all_rows: List[Dict[str, Any]] = []
-    word_counts: List[int] = []
+    if not args.flat_only:
+        task_dir = out_root / "longbench"
+        task_dir.mkdir(parents=True, exist_ok=True)
+        grouped: Dict[str, List[Dict[str, Any]]] = {task: [] for task in tasks}
+        for row in rows:
+            grouped.setdefault(str(row.get("dataset", "")), []).append(row)
+        for task, task_rows in grouped.items():
+            if not task or not task_rows:
+                continue
+            path = task_dir / f"{task}.jsonl"
+            with path.open("w", encoding="utf-8") as handle:
+                for row in task_rows:
+                    handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+        print(f"Per-task files → {task_dir}")
 
-    for sub in SUBTASKS:
-        print(f"Loading {args.repo} / {sub} …")
-        ds = load_dataset(args.repo, sub, cache_dir=args.cache_dir)
-        split = "test" if "test" in ds else next(iter(ds.keys()))
-        split_ds = ds[split]
-
-        if not args.skip_save_to_disk:
-            sub_dir = disk_root / sub
-            print(f"  save_to_disk → {sub_dir}")
-            # DatasetLoader looks for subtask dirs; keep a DatasetDict with the
-            # original split name so load_from_disk / arrow readers still work.
-            ds.save_to_disk(str(sub_dir))
-
-        n_sub = 0
-        for row in split_ds:
-            item = dict(row)
-            item.setdefault("dataset", sub)
-            all_rows.append(item)
-            prompt = _prompt_from_row(item)
-            if prompt:
-                word_counts.append(_word_count(prompt))
-            n_sub += 1
-        print(f"  {n_sub} rows from split={split!r}")
-
-    jsonl_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(jsonl_path, "w", encoding="utf-8") as f:
-        for row in all_rows:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
-
-    print(f"\nWrote {len(all_rows)} rows → {jsonl_path}")
-    if not args.skip_save_to_disk:
-        print(f"Per-subtask folders → {disk_root}/{{{','.join(SUBTASKS)}}}")
-    _print_stats(word_counts, "prompt = context + input")
-
+    word_counts = [_word_count(prompt) for row in rows if (prompt := _prompt_from_row(row))]
+    print(f"\nWrote {len(rows)} rows → {jsonl_path}")
+    _print_stats(word_counts, "prompt = context + blank line + input")
     print(
         "\nUse offline:\n"
         f"  --dataset longbench --dataset-path {jsonl_path}\n"
-        "  (or --dataset-path "
-        f"{disk_root}  for per-subtask dirs)\n"
-        "\nSuggested starters with max_model_len=8192:\n"
-        "  --min-words 500 --max-words 4000\n"
-        "Then widen toward 1000–6000 once jobs are stable."
+        "  --min-words 800 --max-words 6000 --max-model-len 14848\n"
+        "Prompts over 12,848 Qwen3.5-2B tokens are dropped when the benchmark loads this file."
     )
 
 

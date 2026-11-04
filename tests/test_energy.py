@@ -188,6 +188,27 @@ class MonitorTests(NVMLTestCase):
         self.assertEqual(metrics.per_gpu_energy_j[0], 200)
         self.assertIsNone(metrics.per_gpu_energy_j[1])
 
+    def test_samples_record_sm_and_memory_clocks(self):
+        self.nvml.nvmlDeviceGetClockInfo = Mock(side_effect=lambda handle, kind: 1500 if kind == 1 else 1215)
+        monitor = self.monitor(device_indices=[0])
+        monitor._sample_gpu()
+        sample = monitor.samples["gpu"][0]
+        self.assertEqual(sample["power_w"], [100.0])
+        self.assertEqual(sample["sm_mhz"], [1500.0])
+        self.assertEqual(sample["mem_mhz"], [1215.0])
+        self.nvml.nvmlDeviceGetClockInfo.side_effect = RuntimeError("clocks unavailable")
+        monitor._sample_gpu()
+        failed = monitor.samples["gpu"][1]
+        self.assertEqual(failed["power_w"], [100.0])
+        self.assertEqual(failed["sm_mhz"], [None])
+        self.assertEqual(failed["mem_mhz"], [None])
+        with tempfile.TemporaryDirectory() as directory:
+            paths = monitor.save_gpu_usage(Path(directory) / "trace")
+            self.assertEqual(set(paths), {"power", "memory", "utilization", "sm_clock", "mem_clock"})
+            clocks = json.loads(Path(paths["sm_clock"]).read_text())
+        self.assertEqual(clocks["unit"], "MHz")
+        self.assertEqual(clocks["samples"][0]["gpus"]["0"], 1500.0)
+
     def test_stop_restart_and_close_release_nvml_once(self):
         monitor = self.monitor(device_indices=[0], interval_s=60)
         monitor.start()

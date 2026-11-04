@@ -107,16 +107,20 @@ class RayClusterGPUEnergyMonitor(EnergyMonitor):
         count = min(len(trace["power"]) for trace in usable)
         merged = []
         for index in range(count):
-            power, memory, util = [], [], []
+            power, memory, util, sm_mhz, mem_mhz = [], [], [], [], []
             for trace in usable:
                 power.extend(trace["power"][index])
                 memory.extend(trace["memory"][index] if index < len(trace["memory"]) else [])
                 util.extend(trace["utilization"][index] if index < len(trace["utilization"]) else [])
+                sm_mhz.extend(trace.get("sm_mhz", [])[index] if index < len(trace.get("sm_mhz", [])) else [])
+                mem_mhz.extend(trace.get("mem_mhz", [])[index] if index < len(trace.get("mem_mhz", [])) else [])
             merged.append({
                 "timestamp_s": float(usable[0]["timestamps"][index]),
                 "power_w": power,
                 "memory_mb": memory,
                 "utilization_pct": util,
+                "sm_mhz": sm_mhz,
+                "mem_mhz": mem_mhz,
             })
         self._samples["gpu"] = merged
         self._cluster_gpus = sum(trace["n_gpus"] for trace in usable)
@@ -179,6 +183,8 @@ class RayClusterGPUEnergyMonitor(EnergyMonitor):
             ("power", "power_w", "W", "gpu_power"),
             ("memory", "memory_mb", "MB", "gpu_memory"),
             ("utilization", "utilization_pct", "%", "gpu_utilization"),
+            ("sm_clock", "sm_mhz", "MHz", "gpu_sm_clock"),
+            ("mem_clock", "mem_mhz", "MHz", "gpu_mem_clock"),
         ):
             rows = []
             for sample in samples:

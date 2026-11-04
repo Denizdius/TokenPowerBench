@@ -89,6 +89,18 @@ def _validate_options(options):
         options["dataset"] = options["dataset"].strip().lower()
         if options["dataset"] not in ("alpaca", "dolly", "longbench", "humaneval"):
             raise ValueError("dataset must be alpaca, dolly, longbench, or humaneval")
+    dataset_path = options.get("dataset_path")
+    if dataset_path is not None:
+        if options["prompts"] is not None or options["prompts_file"] is not None:
+            raise ValueError("dataset_path requires --dataset and cannot be combined with prompts or a prompts file")
+        options["dataset_path"] = _path("dataset_path", dataset_path)
+        if not options["dataset_path"].exists():
+            raise ValueError(f"dataset_path does not exist: {options['dataset_path']}")
+    else:
+        options["dataset_path"] = None
+    if not isinstance(options.get("language_model_only", False), bool):
+        raise TypeError("language_model_only must be a bool")
+    options["language_model_only"] = options.get("language_model_only", False)
     if not any(source is not None for source in sources):
         options["dataset"] = "alpaca"
     sizes = options["batch_sizes"]
@@ -103,6 +115,51 @@ def _validate_options(options):
         raise TypeError("phase_profiling must be a bool")
     if options["phase_profiling"] and options["batch_sizes"] != [1]:
         raise ValueError("phase_profiling requires batch_sizes=(1,): concurrent requests mix prefill and decode power")
+    for name, default in (("pipeline_parallel_size", 1), ("data_parallel_size", 1), ("dp_num_nodes", 1)):
+        options[name] = _integer(name, options.get(name, default))
+    options["dp_node_rank"] = _integer("dp_node_rank", options.get("dp_node_rank", 0), minimum=0)
+    options["dp_master_port"] = _integer("dp_master_port", options.get("dp_master_port", 0), minimum=0)
+    master = options.get("dp_master_addr", "")
+    if master is None:
+        master = ""
+    if not isinstance(master, str):
+        raise TypeError("dp_master_addr must be a string")
+    options["dp_master_addr"] = master
+    if options["data_parallel_size"] % options["dp_num_nodes"] != 0:
+        raise ValueError("data_parallel_size must be divisible by dp_num_nodes")
+    if options["dp_num_nodes"] > 1 and not options["dp_master_addr"]:
+        raise ValueError("dp_master_addr is required when dp_num_nodes is greater than 1")
+    if options["dp_node_rank"] >= options["dp_num_nodes"]:
+        raise ValueError("dp_node_rank must be less than dp_num_nodes")
+    if options["phase_profiling"] and options["data_parallel_size"] > 1:
+        raise ValueError("phase_profiling does not support data_parallel_size greater than 1")
+    for name in ("enforce_eager", "save_gpu_usage"):
+        if not isinstance(options.get(name, False), bool):
+            raise TypeError(f"{name} must be a bool")
+        options[name] = options.get(name, False)
+    dtype = options.get("dtype", "auto")
+    if not isinstance(dtype, str) or dtype not in ("auto", "half", "float16", "bfloat16", "float", "float32"):
+        raise ValueError("dtype must be auto, half, float16, bfloat16, float, or float32")
+    options["dtype"] = dtype
+    lora_path = options.get("lora_path")
+    if lora_path is None:
+        options["lora_path"] = None
+    else:
+        options["lora_path"] = _path("lora_path", lora_path)
+        if not options["lora_path"].exists():
+            raise ValueError(f"lora_path does not exist: {options['lora_path']}")
+    options["max_lora_rank"] = _integer("max_lora_rank", options.get("max_lora_rank", 64))
+    lora_name = options.get("lora_name", "finetuned")
+    if not isinstance(lora_name, str) or not lora_name.strip() or "/" in lora_name or "\\" in lora_name:
+        raise ValueError("lora_name must be a nonempty filename stem")
+    options["lora_name"] = lora_name
+    run_tag = options.get("run_tag")
+    if run_tag in (None, ""):
+        options["run_tag"] = None
+    elif not isinstance(run_tag, str) or not run_tag.strip() or "/" in run_tag or "\\" in run_tag:
+        raise ValueError("run_tag must be a nonempty filename stem")
+    else:
+        options["run_tag"] = run_tag.strip()
     for name in ("num_samples", "max_model_len", "tensor_parallel_size"):
         if options[name] is not None:
             _integer(name, options[name])
@@ -136,9 +193,13 @@ def _load_prompts(options):
         prompts = _prompt_list(json.loads(options["prompts_file"].read_text()))
     if prompts is None:
         from .data import DatasetLoader
+        load_kwargs = {}
+        if options.get("dataset_path") is not None:
+            load_kwargs["dataset_path"] = str(options["dataset_path"])
         prompts = DatasetLoader(seed=options["seed"]).load(
             options["dataset"], num_samples=options["num_samples"] or 1000,
-            min_words=options["min_words"], max_words=options["max_words"])
+            min_words=options["min_words"], max_words=options["max_words"],
+            **load_kwargs)
         prompts = _prompt_list(prompts)
         count = options["num_samples"] or 1000
     else:
@@ -263,12 +324,37 @@ def check_environment(monitor="auto", device_indices=None, device_uuids=None) ->
         _cleanup([("monitor.close", sensor.close)], [])
 
 
+def _align_monitor_to_parallelism(sensor, options):
+    """Keep the CUDA-visible GPU set, or the first TP x PP x DP devices in that set."""
+    devices = sensor.capabilities.get("gpu", {}).get("devices", [])
+    visible = len(devices)
+    tp = options["tensor_parallel_size"]
+    pp = options["pipeline_parallel_size"]
+    dp = options["data_parallel_size"]
+    if pp == 1 and dp == 1:
+        if tp is not None and tp != visible:
+            raise ValueError("tensor_parallel_size must equal the number of CUDA-visible GPUs; set CUDA_VISIBLE_DEVICES to select exactly those devices")
+        return sensor
+    if tp is None:
+        raise ValueError("tensor_parallel_size is required when pipeline_parallel_size or data_parallel_size is greater than 1")
+    width = tp * pp * dp
+    if width > visible:
+        raise ValueError(f"TP x PP x DP = {tp} x {pp} x {dp} = {width} exceeds visible GPU count ({visible})")
+    if width == visible:
+        return sensor
+    selected = [device["index"] for device in devices[:width]]
+    sensor.close()
+    return create_monitor(options["monitor"], device_indices=selected)
+
+
 def benchmark(
     *,
     model: str,
     prompts: Sequence[str] | None = None,
     prompts_file: str | os.PathLike | None = None,
     dataset: str | None = None,
+    dataset_path: str | os.PathLike | None = None,
+    language_model_only: bool = False,
     num_samples: int | None = None,
     batch_sizes: Sequence[int] = (1,),
     output_tokens: int = 128,
@@ -279,6 +365,19 @@ def benchmark(
     temperature: float = 0,
     max_model_len: int | None = None,
     tensor_parallel_size: int | None = None,
+    pipeline_parallel_size: int = 1,
+    data_parallel_size: int = 1,
+    dp_num_nodes: int = 1,
+    dp_node_rank: int = 0,
+    dp_master_addr: str = "",
+    dp_master_port: int = 0,
+    enforce_eager: bool = False,
+    dtype: str = "auto",
+    lora_path: str | os.PathLike | None = None,
+    max_lora_rank: int = 64,
+    lora_name: str = "finetuned",
+    save_gpu_usage: bool = False,
+    run_tag: str | None = None,
     gpu_memory_utilization: float = 0.9,
     min_words: int = 2,
     max_words: int = 300,
@@ -302,10 +401,7 @@ def benchmark(
     try:
         try:
             sensor = create_monitor(options["monitor"])
-            if options["tensor_parallel_size"] is not None:
-                devices = sensor.capabilities.get("gpu", {}).get("devices", [])
-                if options["tensor_parallel_size"] != len(devices):
-                    raise ValueError("tensor_parallel_size must equal the number of CUDA-visible GPUs; set CUDA_VISIBLE_DEVICES to select exactly those devices")
+            sensor = _align_monitor_to_parallelism(sensor, options)
             requests = _load_prompts(options)
             run_dir = (options["output_dir"] / ("local_" + time.strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:8])).resolve()
             run_dir.mkdir(parents=True, exist_ok=False)
@@ -324,7 +420,15 @@ def benchmark(
             engine.setup_model(resolve_model_path(options["model"]), phase_profiling=options["phase_profiling"],
                                seed=options["seed"], temperature=options["temperature"],
                                max_model_len=options["max_model_len"], tensor_parallel_size=options["tensor_parallel_size"],
-                               gpu_memory_utilization=options["gpu_memory_utilization"])
+                               pipeline_parallel_size=options["pipeline_parallel_size"],
+                               data_parallel_size=options["data_parallel_size"],
+                               enforce_eager=options["enforce_eager"], dtype=options["dtype"],
+                               lora_path=None if options["lora_path"] is None else str(options["lora_path"]),
+                               max_lora_rank=options["max_lora_rank"], lora_name=options["lora_name"],
+                               dp_num_nodes=options["dp_num_nodes"], dp_node_rank=options["dp_node_rank"],
+                               dp_master_addr=options["dp_master_addr"], dp_master_port=options["dp_master_port"],
+                               gpu_memory_utilization=options["gpu_memory_utilization"],
+                               language_model_only=options["language_model_only"])
             write_json(run_dir / "engine_config.json", getattr(engine, "resolved_config", {}))
             if options["phase_profiling"]:
                 engine.run_profiled_benchmark([requests[0]], 1, 1, min(20, options["output_tokens"]))
@@ -353,10 +457,15 @@ def benchmark(
                           "output_tokens_per_s": total_tokens / (end - start),
                           "energy": metric_dict(metrics), "phases": phase_results(sensor, events),
                           "phase_status": "serial_host_boundaries" if events else "not_requested"}
+                if options["save_gpu_usage"]:
+                    stem = options["run_tag"] or "gpu_usage"
+                    result["gpu_usage_files"] = sensor.save_gpu_usage(run_dir / f"{stem}_batch{batch}")
                 write_json(run_dir / f"batch_{batch}_result.json", result)
                 results[f"batch_{batch}"] = result
                 write_json(run_dir / "capabilities.json", sensor.capabilities)
             write_json(run_dir / "results.json", results)
+            if options["run_tag"]:
+                write_json(options["output_dir"] / f"{options['run_tag']}_{time.strftime('%Y%m%d_%H%M%S')}.json", results)
             completed = BenchmarkResult(output_dir=run_dir, results=results)
         finally:
             _cleanup([(name, resource.close) for name, resource in

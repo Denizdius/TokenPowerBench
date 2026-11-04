@@ -1,7 +1,9 @@
 """
 Dataset loader supporting Alpaca, Dolly 15K, LongBench, and HumanEval.
 
-Online: downloads from Hugging Face Hub (requires ``datasets`` + network).
+Alpaca, Dolly, and HumanEval download through Hugging Face ``datasets``.
+LongBench does not: datasets 4 rejects the THUDM dataset script. The loader
+downloads ``data.zip`` and reads the task jsonl files inside it.
 
 Offline: ``--dataset-path`` loads local data without Hub access.
 
@@ -14,8 +16,12 @@ Offline: ``--dataset-path`` loads local data without Hub access.
 
 from __future__ import annotations
 
+import io
 import json
 import random
+import shutil
+import urllib.request
+import zipfile
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -81,6 +87,13 @@ LONGBENCH_EN_NOCODE_SUBTASKS = tuple(
     for s in LONGBENCH_SUBTASKS
     if s not in LONGBENCH_CODE_SUBTASKS and s not in LONGBENCH_ZH_SUBTASKS
 )
+# Public archive. The Hub dataset script is not loaded.
+LONGBENCH_DATA_URL = "https://huggingface.co/datasets/THUDM/LongBench/resolve/main/data.zip"
+# Leave room for a 2,000-token answer inside a 14,848-token context.
+# Applied to every LongBench load, including the 500-token runs.
+LONGBENCH_MAX_PROMPT_TOKENS = 12_848
+LONGBENCH_TOKENIZER_ID = "Qwen/Qwen3.5-2B"
+_LONGBENCH_LOCAL_TOKENIZER = Path("models/Qwen3.5-2B")
 
 
 class DatasetLoader:
@@ -502,43 +515,45 @@ class DatasetLoader:
     ) -> List[str]:
         if local_path:
             root = Path(local_path).expanduser().resolve()
-            rows: List[Dict[str, Any]] = []
-            subtasks = self._longbench_local_subtasks(root)
-            for sub in subtasks:
-                sub_path = root / sub
-                if sub_path.is_dir():
-                    try:
-                        rows.extend(self._load_local_records(sub_path))
-                    except Exception as exc:
-                        print(f"[DatasetLoader] LongBench/{sub}: {exc}")
-            if not rows:
-                out = self._load_local_prompts(
-                    local_path, "longbench", "LongBench", n, min_w, max_w
-                )
-                return out if out is not None else []
-            return self._longbench_rows_to_sampled(rows, n, min_w, max_w)
+            if root.is_file() and root.suffix.lower() == ".zip":
+                rows = read_longbench_zip(root, LONGBENCH_EN_NOCODE_SUBTASKS)
+                return self._longbench_rows_to_sampled(rows, n, min_w, max_w)
+            rows = self._longbench_local_rows(root)
+            if rows:
+                return self._longbench_rows_to_sampled(rows, n, min_w, max_w)
+            out = self._load_local_prompts(
+                local_path, "longbench", "LongBench", n, min_w, max_w
+            )
+            return out if out is not None else []
 
-        if not _HF_AVAILABLE:
-            raise RuntimeError("LongBench dataset unavailable; no synthetic fallback is allowed")
-        try:
-            rows: List[Dict[str, Any]] = []
-            # Hub path: only English non-code configs (same campaign filter).
-            for sub in LONGBENCH_EN_NOCODE_SUBTASKS:
+        zip_path = download_longbench_zip(self.cache_dir)
+        rows = read_longbench_zip(zip_path, LONGBENCH_EN_NOCODE_SUBTASKS)
+        return self._longbench_rows_to_sampled(rows, n, min_w, max_w)
+
+    def _longbench_local_rows(self, root: Path) -> List[Dict[str, Any]]:
+        """Read every English non-code task file under a local directory."""
+        if not root.is_dir():
+            return []
+        rows: List[Dict[str, Any]] = []
+        seen: set[Path] = set()
+        for sub in LONGBENCH_EN_NOCODE_SUBTASKS:
+            candidates = [root / sub, root / f"{sub}.jsonl"]
+            candidates.extend(sorted(root.glob(f"**/{sub}.jsonl")))
+            for path in candidates:
+                key = path.resolve()
+                if key in seen or not path.exists():
+                    continue
+                seen.add(key)
                 try:
-                    ds = hf_load_dataset(
-                        "THUDM/LongBench", sub, cache_dir=self.cache_dir
-                    )
-                    rows.extend(list(self._iter_items(ds, "test")))
+                    loaded = self._load_local_records(path) if path.is_dir() else self._read_json_file(path)
                 except Exception as exc:
-                    print(f"[DatasetLoader] LongBench/{sub} failed: {exc}")
-            if not rows:
-                raise RuntimeError("LongBench dataset unavailable; no synthetic fallback is allowed")
-            return self._longbench_rows_to_sampled(rows, n, min_w, max_w)
-        except RuntimeError:
-            raise
-        except Exception as exc:
-            print(f"[DatasetLoader] LongBench load failed: {exc}")
-            raise RuntimeError("LongBench dataset unavailable; no synthetic fallback is allowed") from exc
+                    print(f"[DatasetLoader] LongBench/{sub}: {exc}")
+                    continue
+                for row in loaded:
+                    row.setdefault("dataset", sub)
+                    row.setdefault("language", "en")
+                    rows.append(row)
+        return rows
 
     def _longbench_rows_to_sampled(
         self,
@@ -577,7 +592,59 @@ class DatasetLoader:
             f"{len(kept)} after drop code/zh → "
             f"{len(prompts)} prompts"
         )
-        return self._filter_sample(prompts, n, min_w, max_w, "LongBench")
+        filtered = self._word_filter(prompts, min_w, max_w, "LongBench")
+        filtered = self._apply_longbench_token_limit(filtered)
+        return self._take_samples(filtered, n, "LongBench")
+
+    def _longbench_tokenizer(self):
+        """Qwen3.5-2B tokenizer used for the hardcoded LongBench length cut."""
+        cached = getattr(self, "_lb_tokenizer", None)
+        if cached is not None:
+            return cached
+        try:
+            from transformers import AutoTokenizer
+        except ImportError as exc:
+            raise RuntimeError(
+                "LongBench token filter needs transformers to load the Qwen3.5-2B tokenizer; "
+                "no synthetic fallback is allowed"
+            ) from exc
+        sources: List[str] = []
+        local = _LONGBENCH_LOCAL_TOKENIZER
+        if (local / "tokenizer.json").is_file() or (local / "tokenizer_config.json").is_file():
+            sources.append(str(local))
+        sources.append(LONGBENCH_TOKENIZER_ID)
+        errors: List[str] = []
+        for source in sources:
+            try:
+                tokenizer = AutoTokenizer.from_pretrained(source, trust_remote_code=True)
+            except Exception as exc:
+                errors.append(f"{source}: {exc}")
+                continue
+            self._lb_tokenizer = tokenizer
+            print(f"[DatasetLoader] LongBench token filter: {source}")
+            return tokenizer
+        raise RuntimeError(
+            "LongBench token filter could not load the Qwen3.5-2B tokenizer; "
+            "no synthetic fallback is allowed: " + "; ".join(errors)
+        )
+
+    def _apply_longbench_token_limit(self, prompts: List[str]) -> List[str]:
+        if not prompts:
+            return prompts
+        tokenizer = self._longbench_tokenizer()
+        kept: List[str] = []
+        dropped = 0
+        for prompt in prompts:
+            n_tokens = len(tokenizer.encode(prompt, add_special_tokens=False))
+            if n_tokens <= LONGBENCH_MAX_PROMPT_TOKENS:
+                kept.append(prompt)
+            else:
+                dropped += 1
+        print(
+            f"[DatasetLoader] LongBench: {len(prompts)} prompts → {len(kept)} "
+            f"after <= {LONGBENCH_MAX_PROMPT_TOKENS} Qwen3.5-2B tokens ({dropped} dropped)"
+        )
+        return kept
 
     @staticmethod
     def _longbench_local_subtasks(root: Path) -> List[str]:
@@ -624,18 +691,106 @@ class DatasetLoader:
     # Helpers
     # ------------------------------------------------------------------
 
-    def _filter_sample(
-        self, prompts: List[str], n: int, min_w: int, max_w: int, name: str
+    def _word_filter(
+        self, prompts: List[str], min_w: int, max_w: int, name: str
     ) -> List[str]:
         filtered = [p for p in prompts if min_w <= len(p.split()) <= max_w]
         print(
             f"[DatasetLoader] {name}: {len(prompts)} prompts → "
             f"{len(filtered)} after words ({min_w}–{max_w})"
         )
-        if n < len(filtered):
-            sampled = self._random.sample(filtered, n)
-            print(f"[DatasetLoader] {name}: sampled {n} from {len(filtered)}")
-            return sampled
-        print(f"[DatasetLoader] {name}: using all {len(filtered)} prompts")
         return filtered
+
+    def _take_samples(self, prompts: List[str], n: int, name: str) -> List[str]:
+        if n < len(prompts):
+            sampled = self._random.sample(prompts, n)
+            print(f"[DatasetLoader] {name}: sampled {n} from {len(prompts)}")
+            return sampled
+        print(f"[DatasetLoader] {name}: using all {len(prompts)} prompts")
+        return prompts
+
+    def _filter_sample(
+        self, prompts: List[str], n: int, min_w: int, max_w: int, name: str
+    ) -> List[str]:
+        return self._take_samples(self._word_filter(prompts, min_w, max_w, name), n, name)
+
+
+def download_longbench_zip(cache_dir: Optional[str] = None) -> Path:
+    """Download THUDM LongBench ``data.zip`` once and reuse the cached file."""
+    cache = Path(cache_dir).expanduser() if cache_dir else Path.home() / ".cache" / "tokenpowerbench" / "longbench"
+    temporary = cache / "data.zip.partial"
+    try:
+        cache.mkdir(parents=True, exist_ok=True)
+        dest = cache / "data.zip"
+        if dest.is_file() and dest.stat().st_size > 0:
+            print(f"[DatasetLoader] Using cached LongBench zip {dest}")
+            return dest
+        print(f"[DatasetLoader] Downloading {LONGBENCH_DATA_URL}")
+        request = urllib.request.Request(
+            LONGBENCH_DATA_URL, headers={"User-Agent": "tokenpowerbench"}
+        )
+        with urllib.request.urlopen(request, timeout=120) as response, open(temporary, "wb") as out:
+            shutil.copyfileobj(response, out)
+        temporary.replace(dest)
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        if temporary.exists():
+            temporary.unlink()
+        raise RuntimeError(
+            "LongBench dataset unavailable; no synthetic fallback is allowed"
+        ) from exc
+    return dest
+
+
+def read_longbench_zip(
+    zip_path: Path, tasks: Optional[Iterable[str]] = None
+) -> List[Dict[str, Any]]:
+    """Read task jsonl members from a LongBench ``data.zip`` archive."""
+    wanted = list(tasks) if tasks is not None else None
+    wanted_set = set(wanted) if wanted is not None else None
+    rows: List[Dict[str, Any]] = []
+    try:
+        with zipfile.ZipFile(zip_path) as archive:
+            members: Dict[str, str] = {}
+            for name in archive.namelist():
+                if name.endswith("/") or not name.endswith(".jsonl"):
+                    continue
+                stem = Path(name).stem
+                if wanted_set is not None and stem not in wanted_set:
+                    continue
+                members.setdefault(stem, name)
+            if wanted is not None and not members:
+                raise RuntimeError(
+                    "LongBench data.zip contains none of the English non-code tasks"
+                )
+            order = wanted if wanted is not None else sorted(members)
+            missing = [stem for stem in order if stem not in members]
+            if missing:
+                print(f"[DatasetLoader] LongBench zip is missing {len(missing)} task files")
+            for stem in order:
+                name = members.get(stem)
+                if name is None:
+                    continue
+                with archive.open(name) as raw:
+                    for line in io.TextIOWrapper(raw, encoding="utf-8"):
+                        line = line.strip()
+                        if not line:
+                            continue
+                        row = json.loads(line)
+                        if not isinstance(row, dict):
+                            continue
+                        row.setdefault("dataset", stem)
+                        if stem in LONGBENCH_EN_NOCODE_SUBTASKS:
+                            row.setdefault("language", "en")
+                        rows.append(row)
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError(
+            "LongBench dataset unavailable; no synthetic fallback is allowed"
+        ) from exc
+    if not rows:
+        raise RuntimeError("LongBench dataset unavailable; no synthetic fallback is allowed")
+    return rows
 

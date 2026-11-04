@@ -16,6 +16,16 @@ from typing import Any, Dict, List
 from .gpu_monitor import _GPU_SAMPLE_INTERVAL
 
 
+def _clock_mhz(pynvml, handle, clock_type):
+    try:
+        value = float(pynvml.nvmlDeviceGetClockInfo(handle, clock_type))
+    except Exception:
+        return None
+    if value < 0:
+        return None
+    return value
+
+
 class RayGPUSampler:
     """Local NVML loop. Instantiated as a Ray actor on one GPU node."""
 
@@ -33,6 +43,8 @@ class RayGPUSampler:
         self._power: List[List[float]] = []
         self._memory: List[List[float]] = []
         self._util: List[List[float]] = []
+        self._sm_mhz: List[List[float]] = []
+        self._mem_mhz: List[List[float]] = []
         self._timestamps: List[float] = []
         self._t0: float | None = None
         print(
@@ -44,6 +56,8 @@ class RayGPUSampler:
         self._power = []
         self._memory = []
         self._util = []
+        self._sm_mhz = []
+        self._mem_mhz = []
         self._timestamps = []
         self._t0 = None
         self._active = True
@@ -68,6 +82,8 @@ class RayGPUSampler:
                 "power": list(self._power),
                 "memory": list(self._memory),
                 "utilization": list(self._util),
+                "sm_mhz": list(self._sm_mhz),
+                "mem_mhz": list(self._mem_mhz),
                 "timestamps": list(self._timestamps),
             }
 
@@ -81,6 +97,8 @@ class RayGPUSampler:
             power_sample: List[float] = []
             memory_sample: List[float] = []
             util_sample: List[float] = []
+            sm_sample: List[float] = []
+            mem_clock_sample: List[float] = []
             for handle in self._handles:
                 try:
                     mw = pynvml.nvmlDeviceGetPowerUsage(handle)
@@ -97,9 +115,13 @@ class RayGPUSampler:
                     util_sample.append(float(util.gpu))
                 except Exception:
                     util_sample.append(0.0)
+                sm_sample.append(_clock_mhz(pynvml, handle, 1))
+                mem_clock_sample.append(_clock_mhz(pynvml, handle, 2))
             with self._lock:
                 self._power.append(power_sample)
                 self._memory.append(memory_sample)
                 self._util.append(util_sample)
+                self._sm_mhz.append(sm_sample)
+                self._mem_mhz.append(mem_clock_sample)
                 self._timestamps.append(now)
             time.sleep(_GPU_SAMPLE_INTERVAL)

@@ -14,6 +14,9 @@ from .base import EnergyMetrics, EnergyMonitor
 
 _GPU_SAMPLE_INTERVAL = 0.1
 _GPU_MINIMUM_WINDOW = 1.0
+# nvmlClockType_t. Stored beside power so frequency plots use the same samples.
+_NVML_CLOCK_SM = 1
+_NVML_CLOCK_MEM = 2
 
 
 def integrate_power(readings, start_time, end_time, min_samples=2):
@@ -174,8 +177,17 @@ class GPUEnergyMonitor(EnergyMonitor):
             }
         return capabilities
 
+    def _clock_mhz(self, handle, clock_type):
+        try:
+            value = float(self._nvml.nvmlDeviceGetClockInfo(handle, clock_type))
+        except Exception:
+            return None
+        if not math.isfinite(value) or value < 0:
+            return None
+        return value
+
     def _sample_gpu(self):
-        powers, memory_mb, utilization_pct = [], [], []
+        powers, memory_mb, utilization_pct, sm_mhz, mem_mhz = [], [], [], [], []
         for device, handle in zip(self._devices, self._handles):
             try:
                 power = self._nvml.nvmlDeviceGetPowerUsage(handle) / 1000.0
@@ -195,8 +207,11 @@ class GPUEnergyMonitor(EnergyMonitor):
                 utilization_pct.append(float(utilization.gpu))
             except Exception:
                 utilization_pct.append(None)
+            sm_mhz.append(self._clock_mhz(handle, _NVML_CLOCK_SM))
+            mem_mhz.append(self._clock_mhz(handle, _NVML_CLOCK_MEM))
         sample = {"timestamp_s": time.perf_counter(), "power_w": powers,
-                  "memory_mb": memory_mb, "utilization_pct": utilization_pct}
+                  "memory_mb": memory_mb, "utilization_pct": utilization_pct,
+                  "sm_mhz": sm_mhz, "mem_mhz": mem_mhz}
         with self._lock:
             self._samples["gpu"].append(sample)
 
@@ -319,6 +334,8 @@ class GPUEnergyMonitor(EnergyMonitor):
             ("power", "power_w", "W", "gpu_power"),
             ("memory", "memory_mb", "MB", "gpu_memory"),
             ("utilization", "utilization_pct", "%", "gpu_utilization"),
+            ("sm_clock", "sm_mhz", "MHz", "gpu_sm_clock"),
+            ("mem_clock", "mem_mhz", "MHz", "gpu_mem_clock"),
         ):
             rows = []
             for sample in samples:
