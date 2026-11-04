@@ -30,11 +30,11 @@ results/local_*/
 results/smoke-*/
 results/ray-process-smoke/
 
-# Synced benchmark result folders (JSON + job logs)
+# Paper figures and synced benchmark result folders stay local.
+paper_figures/
 tokenbench_qwen3_14b/
 tokenbench_qwen3.5_27b/
-tokenbench_*_multi_run_result/run_*/
-tokenbench_*_multi_run_result/logs/
+tokenbench_*_multi_run_result/
 
 # vLLM run logs
 vllm_run_single_node.txt
