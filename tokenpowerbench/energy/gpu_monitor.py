@@ -1,220 +1,309 @@
-"""
-GPU-only energy monitor via NVIDIA NVML.
+"""Selected-device NVML sampling and timestamp-based energy integration.
 
-No elevated privileges required. Works for any data-center or workstation
-user who has CUDA access.
+No torch or NVML import occurs until a monitor is constructed. GPU selection
+uses explicit physical NVML indices/UUIDs, or UUIDs of torch-visible devices.
 """
 
-import json
+import copy
+import importlib
+import math
 import threading
 import time
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
 
-import numpy as np
+from .base import EnergyMetrics, EnergyMonitor
 
-from .base import EnergyMonitor, EnergyMetrics
-
-try:
-    import pynvml
-    _NVML_AVAILABLE = True
-except ImportError:
-    _NVML_AVAILABLE = False
-
-_GPU_SAMPLE_INTERVAL = 0.1  # 100 ms — NVML updates at ~100 ms granularity
-_EDGE_TRIM_FRAC = 0.10      # Drop first/last 10% of samples (ramp-up / idle tail)
+_GPU_SAMPLE_INTERVAL = 0.1
+_GPU_MINIMUM_WINDOW = 1.0
 
 
-def trim_edges(readings: list, frac: float = _EDGE_TRIM_FRAC) -> list:
-    """Remove the first and last `frac` fraction of a reading list."""
-    n = len(readings)
-    if n == 0:
-        return readings
-    buf = max(1, int(n * frac))
-    if n <= buf * 2:
-        return readings
-    return readings[buf:-buf]
+def integrate_power(readings, start_time, end_time, min_samples=2):
+    """Integrate ``(perf_counter timestamp, watts or None)`` pairs.
+
+    Boundary power is linearly interpolated. Extrapolation and gaps containing
+    missing readings are forbidden. Two actual samples in the requested window
+    are required by default; use min_samples=0 for mathematical interpolation
+    tests. Hardware resolution is enforced separately by each monitor.
+    """
+    if not (math.isfinite(start_time) and math.isfinite(end_time)) or end_time <= start_time:
+        raise ValueError("Energy window must have finite timestamps and positive duration")
+    result = {"energy_j": None, "average_power_w": None, "valid": False,
+              "sample_count": 0, "reason": None}
+    points = list(readings)
+    if any(not math.isfinite(t) for t, _ in points):
+        result["reason"] = "non-finite sample timestamp"
+        return result
+    if any(right[0] <= left[0] for left, right in zip(points, points[1:])):
+        result["reason"] = "sample timestamps are not strictly increasing"
+        return result
+    result["sample_count"] = sum(start_time <= t <= end_time for t, _ in points)
+    if len(points) < 2 or points[0][0] > start_time or points[-1][0] < end_time:
+        result["reason"] = "samples do not cover the complete measurement window"
+        return result
+    if result["sample_count"] < min_samples:
+        result["reason"] = "fewer than two samples within the window; sensor cannot resolve this phase"
+        return result
+    energy = 0.0
+    for (t0, p0), (t1, p1) in zip(points, points[1:]):
+        lo, hi = max(t0, start_time), min(t1, end_time)
+        if hi <= lo:
+            continue
+        if any(p is None or not math.isfinite(p) or p < 0 for p in (p0, p1)):
+            result["reason"] = "missing or invalid power reading in measurement window"
+            return result
+        slope = (p1 - p0) / (t1 - t0)
+        power_lo, power_hi = p0 + slope * (lo - t0), p0 + slope * (hi - t0)
+        energy += (power_lo + power_hi) * 0.5 * (hi - lo)
+    result.update(energy_j=energy, average_power_w=energy / (end_time - start_time), valid=True)
+    return result
+
+
+def trim_edges(readings, frac=0.0):
+    """Compatibility helper: measurements now retain all samples."""
+    return list(readings)
+
+
+def _text(value):
+    return value.decode() if isinstance(value, bytes) else str(value)
+
+
+def _torch_device_uuids():
+    try:
+        torch = importlib.import_module("torch")
+        count = torch.cuda.device_count()
+        uuids = [getattr(torch.cuda.get_device_properties(index), "uuid", None)
+                 for index in range(count)]
+    except Exception as exc:
+        raise RuntimeError("Cannot resolve torch CUDA device UUIDs; pass device_indices "
+                           "(physical NVML indices) or device_uuids explicitly") from exc
+    if not uuids or any(value is None for value in uuids):
+        raise RuntimeError("Torch did not expose CUDA device UUIDs; pass device_indices "
+                           "(physical NVML indices) or device_uuids explicitly")
+    return [_text(value) for value in uuids]
 
 
 class GPUEnergyMonitor(EnergyMonitor):
-    """
-    Monitors GPU power draw via NVML at 100 ms intervals.
-
-    Suitable for any user with CUDA access — no root required.
-    """
-
-    def __init__(
-        self,
-        *,
-        tensor_parallel_size: int = 1,
-        pipeline_parallel_size: int = 1,
-        data_parallel_size: int = 1,
-        num_gpus_for_energy: Optional[int] = None,
-    ) -> None:
-        if not _NVML_AVAILABLE:
-            raise RuntimeError(
-                "pynvml is not installed. Run: pip install nvidia-ml-py"
-            )
-        pynvml.nvmlInit()
-        n = pynvml.nvmlDeviceGetCount()
-        self._handles = [pynvml.nvmlDeviceGetHandleByIndex(i) for i in range(n)]
-
-        if num_gpus_for_energy is not None:
-            needed = max(1, num_gpus_for_energy)
-        else:
-            needed = max(
-                1,
-                tensor_parallel_size * pipeline_parallel_size * data_parallel_size,
-            )
-        if needed > n:
-            print(
-                f"[GPUEnergyMonitor] Warning: TP×PP×DP needs {needed} GPU(s) but "
-                f"only {n} visible; capping energy accounting to {n}."
-            )
-            needed = n
-        self._gpu_indices_for_energy = list(range(needed))
-        self._parallel = (tensor_parallel_size, pipeline_parallel_size, data_parallel_size)
-
-        print(f"[GPUEnergyMonitor] Found {n} GPU(s):")
-        for i, h in enumerate(self._handles):
-            name = pynvml.nvmlDeviceGetName(h)
-            role = (
-                "used for energy"
-                if i in self._gpu_indices_for_energy
-                else "idle (excluded from totals)"
-            )
-            print(f"  GPU {i}: {name}  [{role}]")
-        tp, pp, dp = self._parallel
-        idxs = ", ".join(str(i) for i in self._gpu_indices_for_energy)
-        print(
-            f"[GPUEnergyMonitor] Energy totals use GPU(s) [{idxs}] "
-            f"(TP={tp} × PP={pp} × DP={dp} → {len(self._gpu_indices_for_energy)} GPU(s))"
-        )
-
+    def __init__(self, device_indices=None, device_uuids=None, interval_s=0.1):
+        if not math.isfinite(interval_s) or interval_s <= 0:
+            raise ValueError("GPU sample interval must be positive and finite")
+        if device_indices is not None and device_uuids is not None:
+            raise ValueError("Choose device_indices or device_uuids, not both")
+        if device_indices is not None:
+            if (not device_indices or any(type(i) is not int or i < 0 for i in device_indices)
+                    or len(set(device_indices)) != len(device_indices)):
+                raise ValueError("device_indices must contain unique nonnegative physical NVML indices")
+        if device_uuids is not None and (not device_uuids or len(set(device_uuids)) != len(device_uuids)):
+            raise ValueError("device_uuids must be nonempty and unique")
+        self._closed = False
+        self._nvml_initialized = False
+        self._active = False
+        self._stop_event = threading.Event()
         self._lock = threading.Lock()
-        self._active = False
-        self._thread: threading.Thread | None = None
-        self._reset_gpu_buffers()
-
-    def _reset_gpu_buffers(self) -> None:
-        self._readings: List[List[float]] = []
-        self._memory_readings: List[List[float]] = []
-        self._util_readings: List[List[float]] = []
-        self._timestamps: List[float] = []
-        self._sample_t0: Optional[float] = None
-
-    def start(self) -> None:
-        self._reset_gpu_buffers()
-        self._active = True
-        self._thread = threading.Thread(target=self._sample_loop, daemon=True)
-        self._thread.start()
-        time.sleep(2.0)  # let GPU settle before inference starts
-
-    def stop(self) -> None:
-        self._active = False
-        if self._thread:
-            self._thread.join(timeout=2.0)
+        self._threads = []
+        self._samples = {"gpu": [], "rapl": [], "ipmi": []}
+        self._sample_errors = {}
+        self._capabilities = {
+            key: {"available": False, "reason": "disabled in gpu_only mode"}
+            for key in ("cpu", "dram", "system")
+        }
+        self._start_time = self._end_time = None
+        self._interval_s = interval_s
+        self._handles = []
+        self._devices = []
         try:
-            pynvml.nvmlShutdown()
+            self._nvml = importlib.import_module("pynvml")
+        except ImportError as exc:
+            raise RuntimeError("NVML bindings missing; install nvidia-ml-py") from exc
+        try:
+            self._nvml.nvmlInit()
+            self._nvml_initialized = True
+            if device_indices is not None:
+                count = self._nvml.nvmlDeviceGetCount()
+                if any(index >= count for index in device_indices):
+                    raise ValueError(f"Physical NVML GPU index out of range (device count: {count})")
+                selected = [self._nvml.nvmlDeviceGetHandleByIndex(i) for i in device_indices]
+            else:
+                selected_uuids = device_uuids if device_uuids is not None else _torch_device_uuids()
+                if any(str(uuid).startswith("MIG-") for uuid in selected_uuids):
+                    raise ValueError("MIG instances are unsupported: NVML power is physical-GPU scoped")
+                selected = [self._nvml.nvmlDeviceGetHandleByUUID(uuid) for uuid in selected_uuids]
+            for handle in selected:
+                if hasattr(self._nvml, "nvmlDeviceGetMigMode"):
+                    try:
+                        mig_enabled = bool(self._nvml.nvmlDeviceGetMigMode(handle)[0])
+                    except Exception as exc:
+                        unsupported = getattr(self._nvml, "NVMLError_NotSupported", ())
+                        if not isinstance(exc, unsupported):
+                            raise RuntimeError(f"Cannot determine selected GPU MIG status: {exc}") from exc
+                        mig_enabled = False
+                    if mig_enabled:
+                        raise ValueError("MIG-enabled GPUs are unsupported: physical power cannot be attributed to an instance")
+                index = self._nvml.nvmlDeviceGetIndex(handle)
+                uuid = _text(self._nvml.nvmlDeviceGetUUID(handle))
+                if any(device["uuid"] == uuid for device in self._devices):
+                    raise ValueError("Selected GPUs resolve to the same physical UUID")
+                power = self._nvml.nvmlDeviceGetPowerUsage(handle) / 1000.0
+                if not math.isfinite(power) or power < 0:
+                    raise RuntimeError(f"Invalid NVML power reading on GPU {index}")
+                self._handles.append(handle)
+                self._devices.append({"index": index, "uuid": uuid,
+                                      "name": _text(self._nvml.nvmlDeviceGetName(handle))})
+            self._capabilities["gpu"] = {
+                "available": True, "reason": "NVML power probe succeeded",
+                "scope": "selected_physical_gpus", "devices": self._devices,
+                "sampling_interval_s": interval_s, "power_source": "nvmlDeviceGetPowerUsage",
+                "averaging_window_s": None, "minimum_window_s": _GPU_MINIMUM_WINDOW,
+                "resolution_policy": "conservative_unknown_architecture",
+                "warning": "NVML can report 1-second averaged power; 100 ms polling does not imply 100 ms sensor resolution. Sub-second windows are unavailable.",
+            }
         except Exception:
-            pass
+            self.close()
+            raise
 
-    def compute_metrics(
-        self,
-        duration: float,
-        total_output_tokens: int,
-        num_responses: int,
-    ) -> EnergyMetrics:
+    @property
+    def samples(self):
         with self._lock:
-            readings = list(self._readings)
+            return copy.deepcopy(self._samples)
 
-        readings = trim_edges(readings)
-        if not readings:
-            return EnergyMetrics(
-                duration=duration,
-                total_output_tokens=total_output_tokens,
-                num_responses=num_responses,
-            )
+    @property
+    def capabilities(self):
+        capabilities = copy.deepcopy(self._capabilities)
+        for sensor, capability in capabilities.items():
+            capability["sampling_errors"] = {
+                key: value for key, value in self._sample_errors.items()
+                if key == sensor or key.startswith(sensor + ":")
+            }
+        return capabilities
 
-        arr = np.array(readings)
-        per_gpu_avg = np.mean(arr, axis=0)
-        active = self._gpu_indices_for_energy
-        total_gpu_w = float(np.sum(per_gpu_avg[active]))
-
-        return EnergyMetrics(
-            duration=duration,
-            total_output_tokens=total_output_tokens,
-            num_responses=num_responses,
-            gpu_avg_power_w=total_gpu_w,
-            gpu_energy_j=total_gpu_w * duration,
-            per_gpu_power_w={i: float(v) for i, v in enumerate(per_gpu_avg)},
-            gpus_included_for_energy=list(active),
-        )
-
-    def _meta(self, metric: str, unit: str, num_samples: int) -> Dict[str, Any]:
-        tp, pp, dp = self._parallel
-        return {
-            "metric": metric,
-            "unit": unit,
-            "sample_interval_s": _GPU_SAMPLE_INTERVAL,
-            "gpus_included": list(self._gpu_indices_for_energy),
-            "tensor_parallel_size": tp,
-            "pipeline_parallel_size": pp,
-            "data_parallel_size": dp,
-            "num_samples": num_samples,
-        }
-
-    def _series_payload(
-        self,
-        metric: str,
-        unit: str,
-        values: List[List[float]],
-        timestamps: List[float],
-    ) -> Dict[str, Any]:
-        active = list(self._gpu_indices_for_energy)
-        samples = []
-        n = min(len(values), len(timestamps))
-        for i in range(n):
-            gpus: Dict[str, float] = {}
-            for gpu_idx in active:
-                v = values[i][gpu_idx] if gpu_idx < len(values[i]) else 0.0
-                gpus[str(gpu_idx)] = float(v)
-            samples.append({"t_s": float(timestamps[i]), "gpus": gpus})
-        payload = self._meta(metric, unit, len(samples))
-        payload["samples"] = samples
-        return payload
-
-    def export_gpu_traces(self) -> Dict[str, Dict[str, Any]]:
-        """
-        Return three separate traces for active GPUs (TP×PP×DP):
-        power (W), memory (MB), utilization (%).
-        """
+    def _sample_gpu(self):
+        powers, memory_mb, utilization_pct = [], [], []
+        for device, handle in zip(self._devices, self._handles):
+            try:
+                power = self._nvml.nvmlDeviceGetPowerUsage(handle) / 1000.0
+                if not math.isfinite(power) or power < 0:
+                    raise ValueError("invalid power value")
+                powers.append(power)
+            except Exception as exc:
+                powers.append(None)
+                self._sample_errors[f"gpu:{device['index']}"] = str(exc)
+            try:
+                memory = self._nvml.nvmlDeviceGetMemoryInfo(handle)
+                memory_mb.append(memory.used / (1024.0 * 1024.0))
+            except Exception:
+                memory_mb.append(None)
+            try:
+                utilization = self._nvml.nvmlDeviceGetUtilizationRates(handle)
+                utilization_pct.append(float(utilization.gpu))
+            except Exception:
+                utilization_pct.append(None)
+        sample = {"timestamp_s": time.perf_counter(), "power_w": powers,
+                  "memory_mb": memory_mb, "utilization_pct": utilization_pct}
         with self._lock:
-            power = list(self._readings)
-            memory = list(self._memory_readings)
-            util = list(self._util_readings)
-            timestamps = list(self._timestamps)
+            self._samples["gpu"].append(sample)
 
-        return {
-            "power": self._series_payload("power", "W", power, timestamps),
-            "memory": self._series_payload("memory_used", "MB", memory, timestamps),
-            "utilization": self._series_payload(
-                "utilization", "%", util, timestamps
-            ),
-        }
+    def _samplers(self):
+        return [(self._sample_gpu, self._interval_s)]
 
-    def save_gpu_usage(self, path_stem: Union[str, Path]) -> Dict[str, str]:
-        """
-        Write three JSON traces from ``path_stem``:
+    def _sample_loop(self, sample_fn, interval):
+        deadline = time.perf_counter() + interval
+        while not self._stop_event.wait(max(0.0, deadline - time.perf_counter())):
+            sample_fn()
+            deadline += interval
+            now = time.perf_counter()
+            if deadline <= now:
+                deadline += (math.floor((now - deadline) / interval) + 1) * interval
 
-            {stem}_gpu_power.json
-            {stem}_gpu_memory.json
-            {stem}_gpu_utilization.json
+    def start(self):
+        if self._closed:
+            raise RuntimeError("Monitor is closed")
+        if self._active:
+            raise RuntimeError("Monitor is already running")
+        self._samples = {"gpu": [], "rapl": [], "ipmi": []}
+        self._sample_errors = {}
+        self._stop_event.clear()
+        self._end_time = None
+        self._threads = []
+        samplers = self._samplers()
+        # Slow BMC acquisition first, so GPU/RAPL boundary reads stay close to
+        # the caller's inference start even when ipmitool takes several seconds.
+        for sampler, _ in reversed(samplers):
+            sampler()
+        self._start_time = time.perf_counter()
+        self._active = True
+        for sampler, interval in samplers:
+            thread = threading.Thread(target=self._sample_loop, args=(sampler, interval), daemon=True)
+            self._threads.append(thread)
+            thread.start()
 
-        Returns a dict mapping metric name → file path.
-        """
+    def stop(self):
+        if not self._active:
+            return
+        self._end_time = time.perf_counter()
+        self._stop_event.set()
+        for thread, (sampler, _) in zip(self._threads, self._samplers()):
+            thread.join()  # IPMI subprocesses have a bounded timeout.
+            sampler()
+        self._active = False
+
+    def close(self):
+        if self._closed:
+            return
+        try:
+            self.stop()
+        finally:
+            if self._nvml_initialized:
+                try:
+                    self._nvml.nvmlShutdown()
+                finally:
+                    self._nvml_initialized = False
+            self._closed = True
+
+    def _window(self, duration, start_time, end_time):
+        if (start_time is None) != (end_time is None):
+            raise ValueError("Provide both start_time and end_time")
+        if start_time is None:
+            if self._start_time is None:
+                raise RuntimeError("Monitor has not been started")
+            start_time = self._start_time
+            end_time = start_time + duration
+        if not (math.isfinite(start_time) and math.isfinite(end_time)) or end_time <= start_time:
+            raise ValueError("Measurement duration must be positive and finite")
+        return start_time, end_time
+
+    def compute_metrics(self, duration, total_output_tokens, num_responses,
+                        start_time=None, end_time=None):
+        start_time, end_time = self._window(duration, start_time, end_time)
+        samples = self.samples["gpu"]
+        metrics = EnergyMetrics(duration=end_time - start_time,
+                                total_output_tokens=total_output_tokens, num_responses=num_responses,
+                                start_time=start_time, end_time=end_time, capabilities=self.capabilities)
+        metrics.warnings.append(self._capabilities["gpu"]["warning"])
+        energies = []
+        for column, device in enumerate(self._devices):
+            integrated = integrate_power([(s["timestamp_s"], s["power_w"][column]) for s in samples],
+                                         start_time, end_time)
+            if metrics.duration < _GPU_MINIMUM_WINDOW:
+                integrated.update(energy_j=None, average_power_w=None, valid=False,
+                                  reason="window shorter than conservative 1-second NVML averaging resolution")
+            index = device["index"]
+            metrics.per_gpu_power_w[index] = integrated["average_power_w"]
+            metrics.per_gpu_energy_j[index] = integrated["energy_j"]
+            metrics.sample_counts[f"gpu:{index}"] = integrated["sample_count"]
+            if not integrated["valid"]:
+                metrics.warnings.append(f"GPU {index}: {integrated['reason']}")
+            energies.append(integrated["energy_j"])
+        metrics.gpus_included_for_energy = [device["index"] for device in self._devices]
+        if energies and all(value is not None for value in energies):
+            metrics.gpu_energy_j = sum(energies)
+            metrics.gpu_avg_power_w = metrics.gpu_energy_j / metrics.duration
+            metrics.energy_scope = "selected_gpus"
+        return metrics
+
+    def save_gpu_usage(self, path_stem):
+        """Write power, memory, and utilization JSON traces for the selected GPUs."""
+        from pathlib import Path
+        import json
+
         stem = Path(path_stem)
-        # Allow callers to pass "..._gpu_usage" / "..._gpu_usage.json" for compat.
         name = stem.name
         for suffix in ("_gpu_usage.json", "_gpu_usage", ".json"):
             if name.endswith(suffix):
@@ -222,52 +311,28 @@ class GPUEnergyMonitor(EnergyMonitor):
                 break
         stem = stem.with_name(name)
         stem.parent.mkdir(parents=True, exist_ok=True)
-
-        traces = self.export_gpu_traces()
-        paths: Dict[str, str] = {}
-        for key, filename_key in (
-            ("power", "gpu_power"),
-            ("memory", "gpu_memory"),
-            ("utilization", "gpu_utilization"),
+        with self._lock:
+            samples = list(self._samples["gpu"])
+        included = [device["index"] for device in self._devices]
+        paths = {}
+        for key, field, unit, filename in (
+            ("power", "power_w", "W", "gpu_power"),
+            ("memory", "memory_mb", "MB", "gpu_memory"),
+            ("utilization", "utilization_pct", "%", "gpu_utilization"),
         ):
-            out = stem.parent / f"{stem.name}_{filename_key}.json"
-            with open(out, "w") as f:
-                json.dump(traces[key], f, indent=2)
+            rows = []
+            for sample in samples:
+                values = sample.get(field) or []
+                gpus = {}
+                for column, index in enumerate(included):
+                    value = values[column] if column < len(values) else None
+                    gpus[str(index)] = None if value is None else float(value)
+                rows.append({"t_s": float(sample["timestamp_s"]), "gpus": gpus})
+            payload = {
+                "metric": key, "unit": unit, "gpus_included": included,
+                "num_samples": len(rows), "samples": rows,
+            }
+            out = stem.parent / f"{stem.name}_{filename}.json"
+            out.write_text(json.dumps(payload, indent=2))
             paths[key] = str(out)
-            print(
-                f"[GPUEnergyMonitor] Saved {key} trace "
-                f"({traces[key]['num_samples']} samples, "
-                f"GPUs {traces[key]['gpus_included']}) → {out}"
-            )
         return paths
-
-    def _sample_loop(self) -> None:
-        while self._active:
-            now = time.time()
-            if self._sample_t0 is None:
-                self._sample_t0 = now
-            power_sample: List[float] = []
-            memory_sample: List[float] = []
-            util_sample: List[float] = []
-            for handle in self._handles:
-                try:
-                    mw = pynvml.nvmlDeviceGetPowerUsage(handle)
-                    power_sample.append(mw / 1000.0)
-                except Exception:
-                    power_sample.append(0.0)
-                try:
-                    mem = pynvml.nvmlDeviceGetMemoryInfo(handle)
-                    memory_sample.append(mem.used / (1024.0 * 1024.0))
-                except Exception:
-                    memory_sample.append(0.0)
-                try:
-                    util = pynvml.nvmlDeviceGetUtilizationRates(handle)
-                    util_sample.append(float(util.gpu))
-                except Exception:
-                    util_sample.append(0.0)
-            with self._lock:
-                self._readings.append(power_sample)
-                self._memory_readings.append(memory_sample)
-                self._util_readings.append(util_sample)
-                self._timestamps.append(now - self._sample_t0)
-            time.sleep(_GPU_SAMPLE_INTERVAL)

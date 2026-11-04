@@ -91,7 +91,7 @@ class DatasetLoader:
     def __init__(self, cache_dir: Optional[str] = None, seed: int = 42) -> None:
         self.cache_dir = cache_dir
         self.seed = seed
-        random.seed(seed)
+        self._random = random.Random(seed)
         if not _HF_AVAILABLE:
             print(
                 "[DatasetLoader] HuggingFace `datasets` not installed — "
@@ -458,15 +458,15 @@ class DatasetLoader:
             )
             return out if out is not None else []
 
+        if not _HF_AVAILABLE:
+            raise RuntimeError("Alpaca/Dolly dataset unavailable; no synthetic fallback is allowed")
         try:
-            if not _HF_AVAILABLE:
-                return self._fallback()
             ds = hf_load_dataset("tatsu-lab/alpaca", cache_dir=self.cache_dir)
             prompts = self._rows_to_prompts(self._iter_items(ds, "train"), "alpaca")
             return self._filter_sample(prompts, n, min_w, max_w, "Alpaca")
         except Exception as exc:
             print(f"[DatasetLoader] Alpaca load failed: {exc}")
-            return self._fallback()
+            raise RuntimeError("Alpaca/Dolly dataset unavailable; no synthetic fallback is allowed") from exc
 
     def _dolly(
         self,
@@ -481,9 +481,9 @@ class DatasetLoader:
             )
             return out if out is not None else []
 
+        if not _HF_AVAILABLE:
+            raise RuntimeError("Alpaca/Dolly dataset unavailable; no synthetic fallback is allowed")
         try:
-            if not _HF_AVAILABLE:
-                return self._fallback()
             ds = hf_load_dataset(
                 "databricks/databricks-dolly-15k", cache_dir=self.cache_dir
             )
@@ -491,7 +491,7 @@ class DatasetLoader:
             return self._filter_sample(prompts, n, min_w, max_w, "Dolly 15K")
         except Exception as exc:
             print(f"[DatasetLoader] Dolly load failed: {exc}")
-            return self._fallback()
+            raise RuntimeError("Alpaca/Dolly dataset unavailable; no synthetic fallback is allowed") from exc
 
     def _longbench(
         self,
@@ -518,9 +518,9 @@ class DatasetLoader:
                 return out if out is not None else []
             return self._longbench_rows_to_sampled(rows, n, min_w, max_w)
 
+        if not _HF_AVAILABLE:
+            raise RuntimeError("LongBench dataset unavailable; no synthetic fallback is allowed")
         try:
-            if not _HF_AVAILABLE:
-                return self._longbench_fallback()
             rows: List[Dict[str, Any]] = []
             # Hub path: only English non-code configs (same campaign filter).
             for sub in LONGBENCH_EN_NOCODE_SUBTASKS:
@@ -532,11 +532,13 @@ class DatasetLoader:
                 except Exception as exc:
                     print(f"[DatasetLoader] LongBench/{sub} failed: {exc}")
             if not rows:
-                return self._longbench_fallback()
+                raise RuntimeError("LongBench dataset unavailable; no synthetic fallback is allowed")
             return self._longbench_rows_to_sampled(rows, n, min_w, max_w)
+        except RuntimeError:
+            raise
         except Exception as exc:
             print(f"[DatasetLoader] LongBench load failed: {exc}")
-            return self._longbench_fallback()
+            raise RuntimeError("LongBench dataset unavailable; no synthetic fallback is allowed") from exc
 
     def _longbench_rows_to_sampled(
         self,
@@ -604,9 +606,9 @@ class DatasetLoader:
             )
             return out if out is not None else []
 
+        if not _HF_AVAILABLE:
+            raise RuntimeError("HumanEval dataset unavailable; no synthetic fallback is allowed")
         try:
-            if not _HF_AVAILABLE:
-                return self._humaneval_fallback()
             ds = hf_load_dataset(
                 "openai/openai_humaneval", cache_dir=self.cache_dir
             )
@@ -616,7 +618,7 @@ class DatasetLoader:
             return self._filter_sample(prompts, n, min_w, max_w, "HumanEval")
         except Exception as exc:
             print(f"[DatasetLoader] HumanEval load failed: {exc}")
-            return self._humaneval_fallback()
+            raise RuntimeError("HumanEval dataset unavailable; no synthetic fallback is allowed") from exc
 
     # ------------------------------------------------------------------
     # Helpers
@@ -631,43 +633,9 @@ class DatasetLoader:
             f"{len(filtered)} after words ({min_w}–{max_w})"
         )
         if n < len(filtered):
-            sampled = random.sample(filtered, n)
+            sampled = self._random.sample(filtered, n)
             print(f"[DatasetLoader] {name}: sampled {n} from {len(filtered)}")
             return sampled
         print(f"[DatasetLoader] {name}: using all {len(filtered)} prompts")
         return filtered
 
-    @staticmethod
-    def _fallback() -> List[str]:
-        return [
-            "Explain the concept of machine learning.",
-            "What are the benefits of renewable energy?",
-            "Describe the process of photosynthesis.",
-            "How does artificial intelligence work?",
-            "What is the difference between supervised and unsupervised learning?",
-            "Explain quantum computing in simple terms.",
-            "What are the main causes of climate change?",
-            "How do neural networks learn?",
-        ]
-
-    @staticmethod
-    def _longbench_fallback() -> List[str]:
-        return [
-            (
-                "Given the following passage about climate change, analyze the main "
-                "arguments and provide a comprehensive summary:\n\n"
-                "Climate change refers to long-term changes in global and regional "
-                "climate patterns. The primary driver of modern climate change is "
-                "human activity, particularly the emission of greenhouse gases such "
-                "as carbon dioxide and methane."
-            ),
-        ]
-
-    @staticmethod
-    def _humaneval_fallback() -> List[str]:
-        return [
-            "Complete the following Python function:\n\n"
-            "def fibonacci(n: int) -> int:\n"
-            '    """Return the nth Fibonacci number."""\n'
-            "    # Your code here",
-        ]

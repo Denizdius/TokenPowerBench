@@ -4,9 +4,14 @@ __pycache__/
 *$py.class
 *.so
 .Python
+*.egg-info/
+.venv/
+build/
+dist/
 
 # Local model weights (large)
 Qwen3-8B-quantized.w4a16/
+models/
 
 # Offline LongBench JSONL — rsync to cluster; do not commit
 longbench/
@@ -21,6 +26,9 @@ results/
 results/**
 !results/
 !results/.gitkeep
+results/local_*/
+results/smoke-*/
+results/ray-process-smoke/
 
 # Synced benchmark result folders (JSON + job logs)
 tokenbench_qwen3_14b/
@@ -32,7 +40,12 @@ tokenbench_*_multi_run_result/logs/
 vllm_run_single_node.txt
 vllm_run_single_node_ts.txt
 
+# Cluster setup and validation artifacts
+/cluster.json
+validation-gh200/
+
 # macOS / local caches
 .DS_Store
 **/.DS_Store
+._*
 .matplotlib/

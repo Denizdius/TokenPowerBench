@@ -31,14 +31,12 @@ import os
 import time
 from pathlib import Path
 
-import torch
-
 from tokenpowerbench.data import DatasetLoader
 from tokenpowerbench.energy import create_monitor
 from tokenpowerbench.engines import VLLMEngine
 
 
-def parse_args():
+def parse_args(argv=None):
     p = argparse.ArgumentParser(description="Single-node LLM energy benchmark")
 
     p.add_argument(
@@ -103,9 +101,10 @@ def parse_args():
         type=int,
         default=1,
         help=(
-            "vLLM data_parallel_size (default: 1). Values > 1 spawn one process "
-            "per DP rank. TP=PP=1 uses vLLM coordinated DP; TP/PP>1 uses "
-            "independent replicas. Requires TP×PP×DP visible GPUs."
+            "Data-parallel size (default: 1). Values > 1 spawn one worker "
+            "process per rank. TP=PP=1 uses vLLM coordinated offline DP; "
+            "TP>1 or PP>1 uses independent replicas. Requires TP×PP×DP "
+            "visible GPUs."
         ),
     )
     p.add_argument(
@@ -181,7 +180,7 @@ def parse_args():
         action="store_true",
         help=(
             "Save per-sample GPU power (W), memory used (MB), and utilization "
-            "(%) for active GPUs (TP×PP×DP) as three JSON traces next to results."
+            "(percent) for active GPUs (TP x PP x DP) as three JSON traces next to results."
         ),
     )
 
@@ -197,7 +196,7 @@ def parse_args():
         ),
     )
 
-    return p.parse_args()
+    return p.parse_args(argv)
 
 
 def run():
@@ -227,6 +226,7 @@ def run():
         print("Error: --max-lora-rank must be >= 1 when --lora-path is set.")
         return
 
+    import torch
     n_gpus = max(torch.cuda.device_count(), 1) if torch.cuda.is_available() else 1
     tp = args.tensor_parallel_size if args.tensor_parallel_size is not None else n_gpus
     pp = args.pipeline_parallel_size
@@ -257,6 +257,7 @@ def run():
         print("vLLM is not installed. Run: pip install vllm")
         return
 
+    monitor = None
     try:
         model = engine.setup_model(
             args.model,
@@ -292,22 +293,20 @@ def run():
 
             monitor = create_monitor(
                 args.monitor,
-                tensor_parallel_size=tp,
-                pipeline_parallel_size=pp,
-                data_parallel_size=dp,
+                device_indices=list(range(tp * pp * dp)),
             )
             monitor.start()
 
             outputs, t0, t1 = engine.run_benchmark(
                 prompts, args.num_samples, batch_size, args.output_tokens
             )
-
-            time.sleep(2.0)
             monitor.stop()
 
             duration = t1 - t0
             total_tokens = engine.estimate_tokens(outputs)
-            metrics = monitor.compute_metrics(duration, total_tokens, len(outputs))
+            metrics = monitor.compute_metrics(
+                duration, total_tokens, len(outputs), start_time=t0, end_time=t1
+            )
 
             print(metrics.summary())
 
@@ -368,6 +367,8 @@ def run():
                     gpu_usage_files["utilization"] if gpu_usage_files else None
                 ),
             }
+            monitor.close()
+            monitor = None
 
         model_slug = os.path.basename(args.model.rstrip("/"))
         timestamp = time.strftime("%Y%m%d_%H%M%S")
@@ -382,7 +383,9 @@ def run():
             json.dump(all_results, f, indent=2)
         print(f"\nResults saved to: {out_file}")
     finally:
-        engine.shutdown()
+        if monitor is not None:
+            monitor.close()
+        engine.close()
 
 
 if __name__ == "__main__":
