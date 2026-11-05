@@ -602,6 +602,8 @@ class DatasetLoader:
         if cached is not None:
             return cached
         try:
+            from tokenpowerbench.compat import allow_huggingface_hub_v2
+            allow_huggingface_hub_v2()
             from transformers import AutoTokenizer
         except ImportError as exc:
             raise RuntimeError(

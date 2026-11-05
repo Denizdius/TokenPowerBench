@@ -83,6 +83,34 @@ class LongBenchLoaderTests(unittest.TestCase):
                     download_longbench_zip(directory)
         self.assertIn("no synthetic fallback", str(caught.exception))
 
+    def test_huggingface_hub_v2_skips_the_transformers_pin(self):
+        import sys
+        from tokenpowerbench.compat import allow_huggingface_hub_v2
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            package = root / "transformers"
+            package.mkdir()
+            (package / "__init__.py").write_text("from . import dependency_versions_check\nLOADED = True\n")
+            (package / "dependency_versions_check.py").write_text(
+                "raise ImportError('huggingface-hub>=1.5.0,<2.0 is required')\n"
+            )
+            sys.path.insert(0, str(root))
+            removed = {}
+            for name in list(sys.modules):
+                if name == "transformers" or name.startswith("transformers."):
+                    removed[name] = sys.modules.pop(name)
+            try:
+                allow_huggingface_hub_v2()
+                import transformers
+                self.assertTrue(transformers.LOADED)
+            finally:
+                sys.path.remove(str(root))
+                for name in list(sys.modules):
+                    if name == "transformers" or name.startswith("transformers."):
+                        sys.modules.pop(name, None)
+                sys.modules.update(removed)
+
     def test_missing_tokenizer_stops_the_longbench_load(self):
         loader = DatasetLoader(seed=1)
         with patch.dict("sys.modules", {"transformers": None}):

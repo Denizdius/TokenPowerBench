@@ -92,6 +92,8 @@ class VLLMEngine(InferenceEngine):
         if not self.available:
             raise RuntimeError("vLLM is not installed. Install tokenpowerbench[vllm].")
 
+        from tokenpowerbench.compat import allow_huggingface_hub_v2
+        allow_huggingface_hub_v2()
         import torch
         from vllm import LLM
 
@@ -544,6 +546,8 @@ def _language_model_only_kwargs(language_model_only: bool) -> dict:
 
 def _read_max_position_embeddings(model_path: str, default: int = 2048) -> int:
     try:
+        from tokenpowerbench.compat import allow_huggingface_hub_v2
+        allow_huggingface_hub_v2()
         from transformers import AutoConfig
         config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
         return int(getattr(config, "max_position_embeddings", default))

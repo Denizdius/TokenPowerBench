@@ -39,6 +39,8 @@ class VLLMPredictor:
         if reserved.intersection(extra):
             raise ValueError("model_kwargs cannot override model, parallelism, or Ray executor settings")
 
+        from tokenpowerbench.compat import allow_huggingface_hub_v2
+        allow_huggingface_hub_v2()
         from vllm import LLM, SamplingParams
 
         self.sampling_params = (SamplingParams(**dict(sampling_params))

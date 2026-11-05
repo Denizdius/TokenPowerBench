@@ -1,12 +1,9 @@
 """
 vLLM data-parallel worker process (spawned by VLLMEngine).
-
-Two modes when DP > 1:
-
-- **Coordinated** (TP=PP=1): vLLM external_launcher + native ``data_parallel_size``.
-- **Replica** (TP>1 or PP>1): independent ``LLM(tp=…, dp=1)`` per worker with
-  ``CUDA_VISIBLE_DEVICES`` pinned (lm_eval-style). Avoids NCCL deadlocks where
-  vLLM expects ``TP×DP`` processes but only ``DP`` are spawned.
+When TP=PP=1 and DP>1: **coordinated** mode (``VLLM_DP_*`` +
+``LLM(data_parallel_size=k)`` + ``external_launcher``).
+When TP>1 or PP>1 and DP>1: **replica** mode — independent
+``LLM(tp=…, pp=…)`` per worker with ``CUDA_VISIBLE_DEVICES`` pinned.
 """
 
 from __future__ import annotations
@@ -31,6 +28,8 @@ _DP_ENV_KEYS = (
 
 
 def _load_llm(config: dict):
+    from tokenpowerbench.compat import allow_huggingface_hub_v2
+    allow_huggingface_hub_v2()
     from vllm import LLM
     from vllm.lora.request import LoRARequest
 
@@ -91,7 +90,7 @@ def configure_coordinated_dp_env(
     dp_master_port: int,
     torch_master_port: int,
 ) -> None:
-    """Env vars for vLLM external_launcher when TP=PP=1 and DP>1."""
+    """Env vars for vLLM coordinated offline DP (TP=PP=1, DP>1)."""
     _clear_distributed_env()
     os.environ["VLLM_DP_RANK"] = str(global_dp_rank)
     os.environ["VLLM_DP_RANK_LOCAL"] = str(local_dp_rank)
