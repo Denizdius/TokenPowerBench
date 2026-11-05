@@ -90,10 +90,20 @@ class LongBenchLoaderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             package = root / "transformers"
-            package.mkdir()
+            utils = package / "utils"
+            utils.mkdir(parents=True)
             (package / "__init__.py").write_text("from . import dependency_versions_check\nLOADED = True\n")
+            (utils / "__init__.py").write_text("")
+            (utils / "versions.py").write_text(
+                "def require_version(requirement, hint=None):\n"
+                "    raise ImportError(requirement + ' is required, but found huggingface-hub==2.4.0')\n"
+                "def require_version_core(requirement):\n"
+                "    return require_version(requirement, 'Try: pip install transformers -U')\n"
+            )
             (package / "dependency_versions_check.py").write_text(
-                "raise ImportError('huggingface-hub>=1.5.0,<2.0 is required')\n"
+                "from .utils.versions import require_version_core\n"
+                "require_version_core('huggingface-hub>=1.5.0,<2.0')\n"
+                "deps = {'ok': True}\n"
             )
             sys.path.insert(0, str(root))
             removed = {}
@@ -104,6 +114,7 @@ class LongBenchLoaderTests(unittest.TestCase):
                 allow_huggingface_hub_v2()
                 import transformers
                 self.assertTrue(transformers.LOADED)
+                self.assertTrue(transformers.dependency_versions_check.deps["ok"])
             finally:
                 sys.path.remove(str(root))
                 for name in list(sys.modules):

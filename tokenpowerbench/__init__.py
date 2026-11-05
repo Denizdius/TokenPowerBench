@@ -2,6 +2,10 @@
 
 __version__ = "1.0.0"
 
+from .compat import allow_huggingface_hub_v2
+
+allow_huggingface_hub_v2()
+
 from .api import BenchmarkResult, benchmark, check_environment
 from .energy import EnergyMetrics, create_monitor
 
